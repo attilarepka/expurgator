@@ -82,7 +82,6 @@ jobs:
       uses: novalabsxyz/cargo-deb-amd64-ubuntu@v2.7
       with:
         toml_path: Cargo.toml
-      with:
         cmd: cargo build --release --target=x86_64-unknown-linux-musl
     - name: Upload Daemon Artifact
       uses: actions/upload-artifact@v2
