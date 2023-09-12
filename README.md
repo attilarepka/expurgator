@@ -14,7 +14,7 @@ To use Expurgator, you'll need to have Rust installed on your system. If you don
 Once Rust is installed, you can build Expurgator using Cargo, the Rust package manager:
 
 ```shell
-git clone https://github.com/yourusername/expurgator.git
+git clone https://github.com/attilarepka/expurgator.git
 cd expurgator
 cargo build --release
 ```
