@@ -39,6 +39,8 @@ jobs:
     - name: BuildDeb
       id: debbuild
       uses: novalabsxyz/cargo-deb-amd64-ubuntu@v2.7
+      with:
+        - toml_path: ./Cargo.toml
     - name: Upload Deb Artifact
       uses: actions/upload-artifact@v2
       with:
@@ -78,6 +80,8 @@ jobs:
     - name: StaticBinaryBuild
       id: amd64staticbuild
       uses: novalabsxyz/cargo-deb-amd64-ubuntu@v2.7
+      with:
+        - toml_path: ./Cargo.toml
       with:
         cmd: cargo build --release --target=x86_64-unknown-linux-musl
     - name: Upload Daemon Artifact
