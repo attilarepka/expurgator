@@ -2,6 +2,8 @@
 
 expurgator is a cli utility for efficiently purging unwanted files from archive formats.
 
+[![Build status](https://github.com/attilarepka/expurgator/actions/workflows/tests.yml/badge.svg)](https://github.com/attilarepka/expurgator/actions)
+
 ## Features
 
 - Remove unwanted files from various archive formats using a CSV filter file.

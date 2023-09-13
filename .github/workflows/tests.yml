@@ -1,7 +1,6 @@
-name: build and tests
+name: ci
 
 on:
-  push:
   pull_request:
     branches: [ "master" ]
 
