@@ -46,8 +46,8 @@ struct Args {
     #[clap(long, default_value = "6")]
     compression_level: u32,
 }
+
 // TODO:
-// - vector filter and pass only slice to pack()
 // - test case with minimal file & csv
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
@@ -56,9 +56,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let archive_vec = get_file_as_byte_vec(&args.input_file)?;
 
-    let unwanted_files = parse_csv_file(&args.csv_file, args.csv_index, args.has_header)?;
+    let mut filter_list = parse_csv_file(&args.csv_file, args.csv_index, args.has_header)?;
 
-    let result_bytes = pack(archive_vec, unwanted_files, compression_level)?;
+    let result_bytes = pack(archive_vec, &mut filter_list, compression_level)?;
 
     write_file(
         args.output_file.unwrap_or(args.input_file).as_str(),
@@ -70,16 +70,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn pack(
     archive_vec: Vec<u8>,
-    unwanted_files: Vec<PathBuf>,
+    filter_list: &mut Vec<PathBuf>,
     compression_level: u32,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     let mime_type = infer_input_file(&archive_vec)?;
     match mime_type.as_str() {
-        "application/zip" => pack_zip(archive_vec, unwanted_files, compression_level),
+        "application/zip" => pack_zip(archive_vec, filter_list, compression_level),
         "application/gzip" | "application/x-bzip2" | "application/x-xz" | "application/x-tar" => {
             pack_archive(
                 archive_vec,
-                unwanted_files,
+                filter_list,
                 compression_level,
                 mime_type.as_str(),
             )
@@ -165,7 +165,7 @@ fn create_tar_encoder<'a>(
             Ok(writer)
         }
         "application/x-xz" => {
-            let writer = Box::new(XzEncoder::new(archive_vec, 6));
+            let writer = Box::new(XzEncoder::new(archive_vec, compression_level));
             Ok(writer)
         }
         "application/x-tar" => {
@@ -206,9 +206,24 @@ fn get_file_as_byte_vec(file_path: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     Ok(bytes)
 }
 
+fn retain_inner_vec(
+    input: &mut Vec<PathBuf>,
+    filter: &str,
+) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let mut inner_list = Vec::new();
+    input.retain_mut(|e| {
+        if e.starts_with(&filter) {
+            inner_list.push(std::mem::take(e));
+            return false;
+        }
+        true
+    });
+    Ok(inner_list)
+}
+
 fn pack_zip(
     archive_vec: Vec<u8>,
-    mut unwanted_files: Vec<PathBuf>,
+    filter_list: &mut Vec<PathBuf>,
     compression_level: u32,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     let decoder = std::io::Cursor::new(&*archive_vec);
@@ -221,7 +236,7 @@ fn pack_zip(
 
         for i in 0..zip_entries.len() {
             let mut entry = zip_entries.by_index(i)?;
-            let path = String::from(entry.name());
+            let path = entry.name().to_owned();
             let options = FileOptions::default()
                 .compression_level(Some(compression_level.try_into()?))
                 .compression_method(entry.compression())
@@ -229,8 +244,8 @@ fn pack_zip(
 
             println!("processing: {}", path);
 
-            if let Some(found_file) = unwanted_files.iter().position(|e| e.ends_with(&path)) {
-                unwanted_files.swap_remove(found_file);
+            if let Some(found_file) = filter_list.iter().position(|e| e.ends_with(&path)) {
+                filter_list.swap_remove(found_file);
             } else {
                 if entry.is_dir() {
                     zip.add_directory(path, options)?;
@@ -242,12 +257,10 @@ fn pack_zip(
 
                     if infer::is_archive(&entry_bytes) {
                         println!("inner archive: {}", path);
-                        let (inner_vec, old_vec): (Vec<_>, Vec<_>) = unwanted_files
-                            .into_iter()
-                            .partition(|e| e.starts_with(&path));
-                        unwanted_files = old_vec;
-                        if inner_vec.len() > 0 {
-                            let archive_vec = pack(entry_bytes, inner_vec, compression_level)?;
+                        let mut inner_filter_list = retain_inner_vec(filter_list, &path)?;
+                        if inner_filter_list.len() > 0 {
+                            let archive_vec =
+                                pack(entry_bytes, &mut inner_filter_list, compression_level)?;
                             zip.start_file(path, options)?;
                             zip.write_all(&*archive_vec)?;
 
@@ -268,7 +281,7 @@ fn pack_zip(
 
 fn pack_archive(
     archive_vec: Vec<u8>,
-    mut unwanted_files: Vec<PathBuf>,
+    filter_list: &mut Vec<PathBuf>,
     compression_level: u32,
     mime_type: &str,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -301,19 +314,20 @@ fn pack_archive(
                 Ok(res) => res,
             };
 
-            let path = entry.path()?.into_owned();
-            println!("processing: {}", path.display());
+            let path = (*entry.path()?).to_owned();
+            let path = path.to_str().unwrap();
+            println!("processing: {}", path);
 
-            if let Some(found_file) = unwanted_files.iter().position(|e| e.ends_with(&path)) {
-                unwanted_files.swap_remove(found_file);
+            if let Some(found_file) = filter_list.iter().position(|e| e.ends_with(&path)) {
+                filter_list.swap_remove(found_file);
             } else {
                 match entry.header().entry_type() {
                     tar::EntryType::Directory => {
-                        println!("adding directory {}", path.display());
+                        println!("adding directory {}", path);
                         tar.append_dir(&path, ".")?;
                     }
                     tar::EntryType::Regular
-                    | tar::EntryType::GNUSparse // nope tar-rs not yet supporting this properly
+                    | tar::EntryType::GNUSparse
                     | tar::EntryType::Continuous
                     | tar::EntryType::Fifo
                     | tar::EntryType::Char
@@ -321,7 +335,7 @@ fn pack_archive(
                     | tar::EntryType::GNULongName
                     | tar::EntryType::XGlobalHeader
                     | tar::EntryType::XHeader => {
-                        println!("adding file {}", path.display());
+                        println!("adding file {}", path);
 
                         // read exactly the size of the current entry
                         let mut entry_bytes =
@@ -329,13 +343,11 @@ fn pack_archive(
                         entry.read_exact(&mut entry_bytes)?;
 
                         if infer::is_archive(&entry_bytes) {
-                            println!("inner archive: {}", path.display());
-                            let (inner_vec, old_vec): (Vec<_>, Vec<_>) = unwanted_files
-                                .into_iter()
-                                .partition(|e| e.starts_with(&path));
-                            unwanted_files = old_vec;
-                            if inner_vec.len() > 0 {
-                                let archive_vec = pack(entry_bytes, inner_vec, compression_level)?;
+                            println!("inner archive: {}", path);
+                            let mut inner_filter_list = retain_inner_vec(filter_list, &path)?;
+                            if inner_filter_list.len() > 0 {
+                                let archive_vec =
+                                    pack(entry_bytes, &mut inner_filter_list, compression_level)?;
                                 // header size needs correction as we removed few files
                                 let mut header = entry.header().clone();
                                 header.set_size(archive_vec.len().try_into()?);
@@ -348,7 +360,7 @@ fn pack_archive(
                     tar::EntryType::Symlink
                     | tar::EntryType::Link
                     | tar::EntryType::GNULongLink => {
-                        println!("adding link {}", path.display());
+                        println!("adding link {}", path);
                         tar.append_link(
                             entry.header().clone().borrow_mut(),
                             &path,
@@ -358,7 +370,7 @@ fn pack_archive(
                                 .unwrap_or(entry.header().path()?),
                         )?;
                     }
-                    _ => println!("unhandled type {}", path.display()),
+                    _ => println!("unhandled type {}", path),
                 }
             }
         }
