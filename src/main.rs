@@ -31,7 +31,7 @@ struct Args {
     csv_file: String,
 
     /// Index of the field in CSV containing the list of files to be removed
-    #[clap(long, short)]
+    #[clap(long)]
     csv_index: usize,
 
     /// Specify this flag if the CSV contains a header record [default: false]
@@ -44,21 +44,26 @@ struct Args {
 
     /// Compression level
     #[clap(long, default_value = "6")]
-    compression_level: usize,
+    compression_level: u32,
 }
-
+// TODO:
+// - vector filter and pass only slice to pack()
+// - test case with minimal file & csv
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
-    let compression = parse_compression_level(args.compression_level)?;
+    let compression_level = parse_compression_level(args.compression_level)?;
 
     let archive_vec = get_file_as_byte_vec(&args.input_file)?;
 
     let unwanted_files = parse_csv_file(&args.csv_file, args.csv_index, args.has_header)?;
 
-    let result_bytes = pack(archive_vec, unwanted_files, compression)?;
+    let result_bytes = pack(archive_vec, unwanted_files, compression_level)?;
 
-    write_file(args.output_file.unwrap_or(args.input_file), result_bytes)?;
+    write_file(
+        args.output_file.unwrap_or(args.input_file).as_str(),
+        result_bytes,
+    )?;
 
     Ok(())
 }
@@ -66,13 +71,18 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn pack(
     archive_vec: Vec<u8>,
     unwanted_files: Vec<PathBuf>,
-    compression: usize,
+    compression_level: u32,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     let mime_type = infer_input_file(&archive_vec)?;
     match mime_type.as_str() {
-        "application/zip" => pack_zip(archive_vec, unwanted_files, compression),
+        "application/zip" => pack_zip(archive_vec, unwanted_files, compression_level),
         "application/gzip" | "application/x-bzip2" | "application/x-xz" | "application/x-tar" => {
-            pack_archive(archive_vec, unwanted_files, compression, mime_type)
+            pack_archive(
+                archive_vec,
+                unwanted_files,
+                compression_level,
+                mime_type.as_str(),
+            )
         }
         _ => Err(format!(
             "Unsupported File Type: The file with MIME type '{}' is not supported.",
@@ -81,10 +91,12 @@ fn pack(
     }
 }
 
-fn parse_compression_level(compression: usize) -> Result<usize, Box<dyn Error>> {
-    match compression {
-        0..=9 => Ok(compression),
-        _ => Err("Invalid Compression Level: Please choose a compression level between 0 and 9.")?,
+fn parse_compression_level(compression_level: u32) -> Result<u32, Box<dyn Error>> {
+    match compression_level {
+        0..=9 => Ok(compression_level),
+        _ => Err(
+            "Invalid Compression Level: Please choose a compression_level level between 0 and 9.",
+        )?,
     }
 }
 
@@ -99,9 +111,8 @@ fn parse_csv_file(
     let mut result: Vec<PathBuf> = Vec::new();
 
     for record in reader.records() {
-        let record = record?;
-        if let Some(field) = record.get(index - 1) {
-            result.push(PathBuf::from(field));
+        if let Some(field) = record?.get(index - 1) {
+            result.push(field.try_into()?);
         } else {
             Err(format!(
                 "Index Not Found: The expected index '{}' was not found.",
@@ -142,14 +153,15 @@ fn infer_input_file(file_bytes: &[u8]) -> Result<String, Box<dyn Error>> {
 fn create_tar_encoder<'a>(
     archive_vec: &'a mut Vec<u8>,
     mime_type: &str,
+    compression_level: u32,
 ) -> Result<Box<dyn Write + 'a>, Box<dyn Error>> {
     match mime_type {
         "application/gzip" => {
-            let writer = Box::new(GzEncoder::new(archive_vec, flate2::Compression::default()));
+            let writer = Box::new(GzEncoder::new(archive_vec, flate2::Compression::new(compression_level)));
             Ok(writer)
         }
         "application/x-bzip2" => {
-            let writer = Box::new(BzEncoder::new(archive_vec, bzip2::Compression::default()));
+            let writer = Box::new(BzEncoder::new(archive_vec, bzip2::Compression::new(compression_level)));
             Ok(writer)
         }
         "application/x-xz" => {
@@ -197,7 +209,7 @@ fn get_file_as_byte_vec(file_path: &str) -> Result<Vec<u8>, Box<dyn Error>> {
 fn pack_zip(
     archive_vec: Vec<u8>,
     mut unwanted_files: Vec<PathBuf>,
-    compression: usize,
+    compression_level: u32,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     let decoder = std::io::Cursor::new(&*archive_vec);
 
@@ -211,6 +223,7 @@ fn pack_zip(
             let mut entry = zip_entries.by_index(i)?;
             let path = String::from(entry.name());
             let options = FileOptions::default()
+                .compression_level(Some(compression_level.try_into()?))
                 .compression_method(entry.compression())
                 .unix_permissions(entry.unix_mode().unwrap_or(0o777));
 
@@ -234,7 +247,7 @@ fn pack_zip(
                             .partition(|e| e.starts_with(&path));
                         unwanted_files = old_vec;
                         if inner_vec.len() > 0 {
-                            let archive_vec = pack(entry_bytes, inner_vec, compression)?;
+                            let archive_vec = pack(entry_bytes, inner_vec, compression_level)?;
                             zip.start_file(path, options)?;
                             zip.write_all(&*archive_vec)?;
 
@@ -256,17 +269,17 @@ fn pack_zip(
 fn pack_archive(
     archive_vec: Vec<u8>,
     mut unwanted_files: Vec<PathBuf>,
-    compression: usize,
-    mime_type: String,
+    compression_level: u32,
+    mime_type: &str,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
-    let decoder = create_tar_decoder(&*archive_vec, mime_type.as_str())?;
+    let decoder = create_tar_decoder(&*archive_vec, mime_type)?;
 
     let mut tar_archive = tar::Archive::new(decoder);
     let tar_entries = tar_archive.entries()?;
 
     let mut result: Vec<u8> = Vec::new();
     {
-        let encoder = create_tar_encoder(&mut result, mime_type.as_str())?;
+        let encoder = create_tar_encoder(&mut result, mime_type, compression_level)?;
 
         let mut tar = tar::Builder::new(encoder);
 
@@ -322,7 +335,7 @@ fn pack_archive(
                                 .partition(|e| e.starts_with(&path));
                             unwanted_files = old_vec;
                             if inner_vec.len() > 0 {
-                                let archive_vec = pack(entry_bytes, inner_vec, compression)?;
+                                let archive_vec = pack(entry_bytes, inner_vec, compression_level)?;
                                 // header size needs correction as we removed few files
                                 let mut header = entry.header().clone();
                                 header.set_size(archive_vec.len().try_into()?);
@@ -354,12 +367,12 @@ fn pack_archive(
     Ok(result)
 }
 
-fn write_file(dst: String, payload: Vec<u8>) -> Result<(), Box<dyn Error>> {
+fn write_file(dst: &str, payload: Vec<u8>) -> Result<(), Box<dyn Error>> {
     let mut out = String::from("out/");
     if !Path::new(out.as_str()).exists() {
         create_dir_all(out.as_str())?;
     }
-    out.push_str(dst.as_str());
+    out.push_str(dst);
     let mut file = OpenOptions::new()
         .create(true)
         .write(true)
@@ -370,4 +383,3 @@ fn write_file(dst: String, payload: Vec<u8>) -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
-
