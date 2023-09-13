@@ -372,7 +372,8 @@ fn write_file(dst: &str, payload: Vec<u8>) -> Result<(), Box<dyn Error>> {
     if !Path::new(out.as_str()).exists() {
         create_dir_all(out.as_str())?;
     }
-    out.push_str(dst);
+    let out_path = Path::new(dst);
+    out.push_str(out_path.file_name().unwrap().to_str().unwrap());
     let mut file = OpenOptions::new()
         .create(true)
         .write(true)
