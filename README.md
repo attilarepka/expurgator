@@ -1,6 +1,8 @@
 # expurgator
 
-expurgator is a Rust-based utility for efficiently cleaning and purging unwanted files from archive formats.
+expurgator is a cli utility for efficiently purging unwanted files from archive formats.
+
+[![Build status](https://github.com/attilarepka/expurgator/actions/workflows/tests.yml/badge.svg)](https://github.com/attilarepka/expurgator/actions)
 
 ## Features
 
@@ -9,14 +11,30 @@ expurgator is a Rust-based utility for efficiently cleaning and purging unwanted
 
 ## Installation
 
-To use Expurgator, you'll need to have Rust installed on your system. If you don't have Rust installed, you can get it from [https://www.rust-lang.org/](https://www.rust-lang.org/).
+**[Archives of precompiled binaries for expurgator are available for 
+macOS and Linux.](https://github.com/attilarepka/expurgator/releases)**
 
-Once Rust is installed, you can build Expurgator using Cargo, the Rust package manager:
+Linux binaries are static executables.
+
+If you're a **Debian** user (or a user of a Debian derivative like **Ubuntu**),
+then expurgator can be installed using a binary `.deb` file provided in each
+[expurgator release](https://github.com/attilarepka/expurgator/releases).
+
+```
+$ curl -LO https://github.com/attilarepka/expurgator/releases/download/0.1.0/expurgator_0.1.0_amd64.deb
+$ sudo dpkg -i expurgator_0.1.0_amd64.deb
+```
+
+### Building
+
+expurgator is written in Rust, so you'll need [Rust installation](https://www.rust-lang.org/) in order to compile it.
+expurgator compiles with Rust 1.70.0 (stable) or newer. In general, it tracks
+the latest stable release of the Rust compiler.
 
 ```shell
-git clone https://github.com/attilarepka/expurgator.git
-cd expurgator
-cargo build --release
+$ git clone https://github.com/attilarepka/expurgator.git
+$ cd expurgator
+$ cargo build --release
 ```
 
 ## Usage
@@ -31,7 +49,7 @@ Options:
       Specify the input archive file.
   --csv-file <CSV_FILE>
       Specify the CSV file containing the list of files to be removed.
-  -c, --csv-index <CSV_INDEX>
+  --csv-index <CSV_INDEX>
       Index of the field in the CSV containing the list of files to be removed.
   --has-header
       Specify this flag if the CSV contains a header record [default: false].

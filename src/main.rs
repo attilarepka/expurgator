@@ -31,7 +31,7 @@ struct Args {
     csv_file: String,
 
     /// Index of the field in CSV containing the list of files to be removed
-    #[clap(long, short)]
+    #[clap(long)]
     csv_index: usize,
 
     /// Specify this flag if the CSV contains a header record [default: false]
@@ -44,35 +44,44 @@ struct Args {
 
     /// Compression level
     #[clap(long, default_value = "6")]
-    compression_level: usize,
+    compression_level: u32,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
-    let compression = parse_compression_level(args.compression_level)?;
+    let compression_level = parse_compression_level(args.compression_level)?;
 
     let archive_vec = get_file_as_byte_vec(&args.input_file)?;
 
-    let unwanted_files = parse_csv_file(&args.csv_file, args.csv_index, args.has_header)?;
+    let mut filter_list = parse_csv_file(&args.csv_file, args.csv_index, args.has_header)?;
+    filter_list = prompt_csv_record(filter_list)?;
 
-    let result_bytes = pack(archive_vec, unwanted_files, compression)?;
+    let result_bytes = pack(archive_vec, &mut filter_list, compression_level)?;
 
-    write_file(args.output_file.unwrap_or(args.input_file), result_bytes)?;
+    write_file(
+        args.output_file.unwrap_or(args.input_file).as_str(),
+        result_bytes,
+    )?;
 
     Ok(())
 }
 
 fn pack(
     archive_vec: Vec<u8>,
-    unwanted_files: Vec<PathBuf>,
-    compression: usize,
+    filter_list: &mut Vec<PathBuf>,
+    compression_level: u32,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     let mime_type = infer_input_file(&archive_vec)?;
     match mime_type.as_str() {
-        "application/zip" => pack_zip(archive_vec, unwanted_files, compression),
+        "application/zip" => pack_zip(archive_vec, filter_list, compression_level),
         "application/gzip" | "application/x-bzip2" | "application/x-xz" | "application/x-tar" => {
-            pack_archive(archive_vec, unwanted_files, compression, mime_type)
+            pack_archive(
+                archive_vec,
+                filter_list,
+                compression_level,
+                mime_type.as_str(),
+            )
         }
         _ => Err(format!(
             "Unsupported File Type: The file with MIME type '{}' is not supported.",
@@ -81,35 +90,16 @@ fn pack(
     }
 }
 
-fn parse_compression_level(compression: usize) -> Result<usize, Box<dyn Error>> {
-    match compression {
-        0..=9 => Ok(compression),
-        _ => Err("Invalid Compression Level: Please choose a compression level between 0 and 9.")?,
+fn parse_compression_level(compression_level: u32) -> Result<u32, Box<dyn Error>> {
+    match compression_level {
+        0..=9 => Ok(compression_level),
+        _ => Err(
+            "Invalid Compression Level: Please choose a compression_level level between 0 and 9.",
+        )?,
     }
 }
 
-fn parse_csv_file(
-    file_path: &str,
-    index: usize,
-    header: bool,
-) -> Result<Vec<PathBuf>, Box<dyn Error>> {
-    let mut reader = ReaderBuilder::new()
-        .has_headers(header)
-        .from_path(file_path)?;
-    let mut result: Vec<PathBuf> = Vec::new();
-
-    for record in reader.records() {
-        let record = record?;
-        if let Some(field) = record.get(index - 1) {
-            result.push(PathBuf::from(field));
-        } else {
-            Err(format!(
-                "Index Not Found: The expected index '{}' was not found.",
-                index
-            ))?;
-        }
-    }
-
+fn prompt_csv_record(result: Vec<PathBuf>) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     let ans = Confirm::new("Is this correct?")
         .with_default(false)
         .with_help_message(
@@ -131,6 +121,30 @@ fn parse_csv_file(
     Ok(result)
 }
 
+fn parse_csv_file(
+    file_path: &str,
+    index: usize,
+    header: bool,
+) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let mut reader = ReaderBuilder::new()
+        .has_headers(header)
+        .from_path(file_path)?;
+    let mut result: Vec<PathBuf> = Vec::new();
+
+    for record in reader.records() {
+        if let Some(field) = record?.get(index - 1) {
+            result.push(field.try_into()?);
+        } else {
+            Err(format!(
+                "Index Not Found: The expected index '{}' was not found.",
+                index
+            ))?;
+        }
+    }
+
+    Ok(result)
+}
+
 fn infer_input_file(file_bytes: &[u8]) -> Result<String, Box<dyn Error>> {
     if infer::is_archive(&file_bytes) {
         let kind = infer::get(&file_bytes);
@@ -142,18 +156,19 @@ fn infer_input_file(file_bytes: &[u8]) -> Result<String, Box<dyn Error>> {
 fn create_tar_encoder<'a>(
     archive_vec: &'a mut Vec<u8>,
     mime_type: &str,
+    compression_level: u32,
 ) -> Result<Box<dyn Write + 'a>, Box<dyn Error>> {
     match mime_type {
         "application/gzip" => {
-            let writer = Box::new(GzEncoder::new(archive_vec, flate2::Compression::default()));
+            let writer = Box::new(GzEncoder::new(archive_vec, flate2::Compression::new(compression_level)));
             Ok(writer)
         }
         "application/x-bzip2" => {
-            let writer = Box::new(BzEncoder::new(archive_vec, bzip2::Compression::default()));
+            let writer = Box::new(BzEncoder::new(archive_vec, bzip2::Compression::new(compression_level)));
             Ok(writer)
         }
         "application/x-xz" => {
-            let writer = Box::new(XzEncoder::new(archive_vec, 6));
+            let writer = Box::new(XzEncoder::new(archive_vec, compression_level));
             Ok(writer)
         }
         "application/x-tar" => {
@@ -194,10 +209,25 @@ fn get_file_as_byte_vec(file_path: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     Ok(bytes)
 }
 
+fn retain_inner_vec(
+    input: &mut Vec<PathBuf>,
+    filter: &str,
+) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let mut inner_list = Vec::new();
+    input.retain_mut(|e| {
+        if e.starts_with(&filter) {
+            inner_list.push(std::mem::take(e));
+            return false;
+        }
+        true
+    });
+    Ok(inner_list)
+}
+
 fn pack_zip(
     archive_vec: Vec<u8>,
-    mut unwanted_files: Vec<PathBuf>,
-    compression: usize,
+    filter_list: &mut Vec<PathBuf>,
+    compression_level: u32,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     let decoder = std::io::Cursor::new(&*archive_vec);
 
@@ -209,15 +239,16 @@ fn pack_zip(
 
         for i in 0..zip_entries.len() {
             let mut entry = zip_entries.by_index(i)?;
-            let path = String::from(entry.name());
+            let path = entry.name().to_owned();
             let options = FileOptions::default()
+                .compression_level(Some(compression_level.try_into()?))
                 .compression_method(entry.compression())
                 .unix_permissions(entry.unix_mode().unwrap_or(0o777));
 
             println!("processing: {}", path);
 
-            if let Some(found_file) = unwanted_files.iter().position(|e| e.ends_with(&path)) {
-                unwanted_files.swap_remove(found_file);
+            if let Some(found_file) = filter_list.iter().position(|e| e.ends_with(&path)) {
+                filter_list.swap_remove(found_file);
             } else {
                 if entry.is_dir() {
                     zip.add_directory(path, options)?;
@@ -229,12 +260,10 @@ fn pack_zip(
 
                     if infer::is_archive(&entry_bytes) {
                         println!("inner archive: {}", path);
-                        let (inner_vec, old_vec): (Vec<_>, Vec<_>) = unwanted_files
-                            .into_iter()
-                            .partition(|e| e.starts_with(&path));
-                        unwanted_files = old_vec;
-                        if inner_vec.len() > 0 {
-                            let archive_vec = pack(entry_bytes, inner_vec, compression)?;
+                        let mut inner_filter_list = retain_inner_vec(filter_list, &path)?;
+                        if inner_filter_list.len() > 0 {
+                            let archive_vec =
+                                pack(entry_bytes, &mut inner_filter_list, compression_level)?;
                             zip.start_file(path, options)?;
                             zip.write_all(&*archive_vec)?;
 
@@ -255,18 +284,18 @@ fn pack_zip(
 
 fn pack_archive(
     archive_vec: Vec<u8>,
-    mut unwanted_files: Vec<PathBuf>,
-    compression: usize,
-    mime_type: String,
+    filter_list: &mut Vec<PathBuf>,
+    compression_level: u32,
+    mime_type: &str,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
-    let decoder = create_tar_decoder(&*archive_vec, mime_type.as_str())?;
+    let decoder = create_tar_decoder(&*archive_vec, mime_type)?;
 
     let mut tar_archive = tar::Archive::new(decoder);
     let tar_entries = tar_archive.entries()?;
 
     let mut result: Vec<u8> = Vec::new();
     {
-        let encoder = create_tar_encoder(&mut result, mime_type.as_str())?;
+        let encoder = create_tar_encoder(&mut result, mime_type, compression_level)?;
 
         let mut tar = tar::Builder::new(encoder);
 
@@ -288,19 +317,20 @@ fn pack_archive(
                 Ok(res) => res,
             };
 
-            let path = entry.path()?.into_owned();
-            println!("processing: {}", path.display());
+            let path = (*entry.path()?).to_owned();
+            let path = path.to_str().unwrap();
+            println!("processing: {}", path);
 
-            if let Some(found_file) = unwanted_files.iter().position(|e| e.ends_with(&path)) {
-                unwanted_files.swap_remove(found_file);
+            if let Some(found_file) = filter_list.iter().position(|e| e.ends_with(&path)) {
+                filter_list.swap_remove(found_file);
             } else {
                 match entry.header().entry_type() {
                     tar::EntryType::Directory => {
-                        println!("adding directory {}", path.display());
+                        println!("adding directory {}", path);
                         tar.append_dir(&path, ".")?;
                     }
                     tar::EntryType::Regular
-                    | tar::EntryType::GNUSparse // nope tar-rs not yet supporting this properly
+                    | tar::EntryType::GNUSparse
                     | tar::EntryType::Continuous
                     | tar::EntryType::Fifo
                     | tar::EntryType::Char
@@ -308,7 +338,7 @@ fn pack_archive(
                     | tar::EntryType::GNULongName
                     | tar::EntryType::XGlobalHeader
                     | tar::EntryType::XHeader => {
-                        println!("adding file {}", path.display());
+                        println!("adding file {}", path);
 
                         // read exactly the size of the current entry
                         let mut entry_bytes =
@@ -316,13 +346,11 @@ fn pack_archive(
                         entry.read_exact(&mut entry_bytes)?;
 
                         if infer::is_archive(&entry_bytes) {
-                            println!("inner archive: {}", path.display());
-                            let (inner_vec, old_vec): (Vec<_>, Vec<_>) = unwanted_files
-                                .into_iter()
-                                .partition(|e| e.starts_with(&path));
-                            unwanted_files = old_vec;
-                            if inner_vec.len() > 0 {
-                                let archive_vec = pack(entry_bytes, inner_vec, compression)?;
+                            println!("inner archive: {}", path);
+                            let mut inner_filter_list = retain_inner_vec(filter_list, &path)?;
+                            if inner_filter_list.len() > 0 {
+                                let archive_vec =
+                                    pack(entry_bytes, &mut inner_filter_list, compression_level)?;
                                 // header size needs correction as we removed few files
                                 let mut header = entry.header().clone();
                                 header.set_size(archive_vec.len().try_into()?);
@@ -335,7 +363,7 @@ fn pack_archive(
                     tar::EntryType::Symlink
                     | tar::EntryType::Link
                     | tar::EntryType::GNULongLink => {
-                        println!("adding link {}", path.display());
+                        println!("adding link {}", path);
                         tar.append_link(
                             entry.header().clone().borrow_mut(),
                             &path,
@@ -345,7 +373,7 @@ fn pack_archive(
                                 .unwrap_or(entry.header().path()?),
                         )?;
                     }
-                    _ => println!("unhandled type {}", path.display()),
+                    _ => println!("unhandled type {}", path),
                 }
             }
         }
@@ -354,12 +382,13 @@ fn pack_archive(
     Ok(result)
 }
 
-fn write_file(dst: String, payload: Vec<u8>) -> Result<(), Box<dyn Error>> {
+fn write_file(dst: &str, payload: Vec<u8>) -> Result<(), Box<dyn Error>> {
     let mut out = String::from("out/");
     if !Path::new(out.as_str()).exists() {
         create_dir_all(out.as_str())?;
     }
-    out.push_str(dst.as_str());
+    let out_path = Path::new(dst);
+    out.push_str(out_path.file_name().unwrap().to_str().unwrap());
     let mut file = OpenOptions::new()
         .create(true)
         .write(true)
@@ -371,3 +400,31 @@ fn write_file(dst: String, payload: Vec<u8>) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use assert_fs::prelude::FileWriteStr;
+
+    #[test]
+    fn test_parse_compression_level() {
+        assert_eq!(parse_compression_level(5).unwrap(), 5);
+        assert!(parse_compression_level(42).is_err());
+    }
+
+    #[test]
+    fn test_parse_csv_file() {
+        let file = assert_fs::NamedTempFile::new("input.csv").unwrap();
+        file.write_str("1,2,some/path,4\n1,2,some/other/path,4")
+            .unwrap();
+        let output = parse_csv_file(file.path().to_str().unwrap(), 3, false).unwrap();
+        assert_eq!(output.len(), 2);
+        assert_eq!(output[0].to_str().unwrap(), "some/path");
+        assert_eq!(output[1].to_str().unwrap(), "some/other/path");
+
+        let output = parse_csv_file(file.path().to_str().unwrap(), 3, true).unwrap();
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].to_str().unwrap(), "some/other/path");
+
+        assert!(parse_csv_file(file.path().to_str().unwrap(), 5, false).is_err());
+    }
+}
