@@ -47,8 +47,6 @@ struct Args {
     compression_level: u32,
 }
 
-// TODO:
-// - test case with minimal file & csv
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
@@ -57,6 +55,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let archive_vec = get_file_as_byte_vec(&args.input_file)?;
 
     let mut filter_list = parse_csv_file(&args.csv_file, args.csv_index, args.has_header)?;
+    filter_list = prompt_csv_record(filter_list)?;
 
     let result_bytes = pack(archive_vec, &mut filter_list, compression_level)?;
 
@@ -100,6 +99,28 @@ fn parse_compression_level(compression_level: u32) -> Result<u32, Box<dyn Error>
     }
 }
 
+fn prompt_csv_record(result: Vec<PathBuf>) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let ans = Confirm::new("Is this correct?")
+        .with_default(false)
+        .with_help_message(
+            format!(
+                "CSV contains {} records, the first index has the value of:\n{}",
+                result.len(),
+                result.first().unwrap().display(),
+            )
+            .as_str(),
+        )
+        .prompt();
+
+    match ans {
+        Ok(true) => return Ok(result),
+        Ok(false) => Err("User Interruption: The process has been interrupted. Exiting...")?,
+        Err(err) => Err(err)?,
+    };
+
+    Ok(result)
+}
+
 fn parse_csv_file(
     file_path: &str,
     index: usize,
@@ -120,24 +141,6 @@ fn parse_csv_file(
             ))?;
         }
     }
-
-    let ans = Confirm::new("Is this correct?")
-        .with_default(false)
-        .with_help_message(
-            format!(
-                "CSV contains {} records, the first index has the value of:\n{}",
-                result.len(),
-                result.first().unwrap().display(),
-            )
-            .as_str(),
-        )
-        .prompt();
-
-    match ans {
-        Ok(true) => return Ok(result),
-        Ok(false) => Err("User Interruption: The process has been interrupted. Exiting...")?,
-        Err(err) => Err(err)?,
-    };
 
     Ok(result)
 }
@@ -395,4 +398,33 @@ fn write_file(dst: &str, payload: Vec<u8>) -> Result<(), Box<dyn Error>> {
     file.write_all(&payload)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use assert_fs::prelude::FileWriteStr;
+
+    #[test]
+    fn test_parse_compression_level() {
+        assert_eq!(parse_compression_level(5).unwrap(), 5);
+        assert!(parse_compression_level(42).is_err());
+    }
+
+    #[test]
+    fn test_parse_csv_file() {
+        let file = assert_fs::NamedTempFile::new("input.csv").unwrap();
+        file.write_str("1,2,some/path,4\n1,2,some/other/path,4")
+            .unwrap();
+        let output = parse_csv_file(file.path().to_str().unwrap(), 3, false).unwrap();
+        assert_eq!(output.len(), 2);
+        assert_eq!(output[0].to_str().unwrap(), "some/path");
+        assert_eq!(output[1].to_str().unwrap(), "some/other/path");
+
+        let output = parse_csv_file(file.path().to_str().unwrap(), 3, true).unwrap();
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].to_str().unwrap(), "some/other/path");
+
+        assert!(parse_csv_file(file.path().to_str().unwrap(), 5, false).is_err());
+    }
 }
