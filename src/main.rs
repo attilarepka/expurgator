@@ -5,6 +5,8 @@ use csv::ReaderBuilder;
 use flate2;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
+use indicatif::ProgressBar;
+use indicatif::ProgressStyle;
 use inquire::Confirm;
 use std::borrow::BorrowMut;
 use std::error::Error;
@@ -14,6 +16,7 @@ use std::io::BufWriter;
 use std::io::Read;
 use std::io::Write;
 use std::path::*;
+use std::time::Duration;
 use tar;
 use xz2::read::XzDecoder;
 use xz2::write::XzEncoder;
@@ -57,7 +60,28 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut filter_list = parse_csv_file(&args.csv_file, args.csv_index, args.has_header)?;
     filter_list = prompt_csv_record(filter_list)?;
 
-    let result_bytes = pack(archive_vec, &mut filter_list, compression_level)?;
+    let progress_bar = ProgressBar::new_spinner();
+    progress_bar.enable_steady_tick(Duration::from_millis(120));
+    progress_bar.set_style(
+        ProgressStyle::with_template("{spinner:.blue} {msg}")
+            .unwrap()
+            .tick_strings(&[
+                "▹▹▹▹▹",
+                "▸▹▹▹▹",
+                "▹▸▹▹▹",
+                "▹▹▸▹▹",
+                "▹▹▹▸▹",
+                "▹▹▹▹▸",
+                "▪▪▪▪▪",
+            ]),
+    );
+
+    let result_bytes = pack(
+        &progress_bar,
+        archive_vec,
+        &mut filter_list,
+        compression_level,
+    )?;
 
     write_file(
         args.output_file.unwrap_or(args.input_file).as_str(),
@@ -68,15 +92,17 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn pack(
+    progress_bar: &ProgressBar,
     archive_vec: Vec<u8>,
     filter_list: &mut Vec<PathBuf>,
     compression_level: u32,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     let mime_type = infer_input_file(&archive_vec)?;
     match mime_type.as_str() {
-        "application/zip" => pack_zip(archive_vec, filter_list, compression_level),
+        "application/zip" => pack_zip(&progress_bar, archive_vec, filter_list, compression_level),
         "application/gzip" | "application/x-bzip2" | "application/x-xz" | "application/x-tar" => {
             pack_archive(
+                &progress_bar,
                 archive_vec,
                 filter_list,
                 compression_level,
@@ -225,6 +251,7 @@ fn retain_inner_vec(
 }
 
 fn pack_zip(
+    progress_bar: &ProgressBar,
     archive_vec: Vec<u8>,
     filter_list: &mut Vec<PathBuf>,
     compression_level: u32,
@@ -245,7 +272,7 @@ fn pack_zip(
                 .compression_method(entry.compression())
                 .unix_permissions(entry.unix_mode().unwrap_or(0o777));
 
-            println!("processing: {}", path);
+            progress_bar.set_message(format!("processing: {}", path));
 
             if let Some(found_file) = filter_list.iter().position(|e| e.ends_with(&path)) {
                 filter_list.swap_remove(found_file);
@@ -259,11 +286,15 @@ fn pack_zip(
                     entry.read_exact(&mut entry_bytes)?;
 
                     if infer::is_archive(&entry_bytes) {
-                        println!("inner archive: {}", path);
+                        progress_bar.set_message(format!("inner archive: {}", path));
                         let mut inner_filter_list = retain_inner_vec(filter_list, &path)?;
                         if inner_filter_list.len() > 0 {
-                            let archive_vec =
-                                pack(entry_bytes, &mut inner_filter_list, compression_level)?;
+                            let archive_vec = pack(
+                                progress_bar,
+                                entry_bytes,
+                                &mut inner_filter_list,
+                                compression_level,
+                            )?;
                             zip.start_file(path, options)?;
                             zip.write_all(&*archive_vec)?;
 
@@ -283,6 +314,7 @@ fn pack_zip(
 }
 
 fn pack_archive(
+    progress_bar: &ProgressBar,
     archive_vec: Vec<u8>,
     filter_list: &mut Vec<PathBuf>,
     compression_level: u32,
@@ -302,12 +334,15 @@ fn pack_archive(
         for entry in tar_entries {
             let mut entry = match entry {
                 Err(err) => {
-                    println!("Error: {}", err);
-                    let ans = Confirm::new("Do you want to continue?")
-                        .with_default(false)
-                        .with_help_message("Failed to process tar entry, this data will be skipped")
-                        .prompt();
-
+                    let mut ans = Ok(false);
+                    progress_bar.suspend(|| {
+                        ans = Confirm::new("Do you want to continue?")
+                            .with_default(false)
+                            .with_help_message(
+                                "Failed to process tar entry, this data will be skipped",
+                            )
+                            .prompt();
+                    });
                     match ans {
                         Ok(true) => continue,
                         Ok(false) => Err(err)?,
@@ -318,15 +353,15 @@ fn pack_archive(
             };
 
             let path = (*entry.path()?).to_owned();
-            let path = path.to_str().unwrap();
-            println!("processing: {}", path);
+            let path = path.to_str().unwrap_or("");
+            progress_bar.set_message(format!("processing: {}", path));
 
             if let Some(found_file) = filter_list.iter().position(|e| e.ends_with(&path)) {
                 filter_list.swap_remove(found_file);
             } else {
                 match entry.header().entry_type() {
                     tar::EntryType::Directory => {
-                        println!("adding directory {}", path);
+                        progress_bar.set_message(format!("adding directory: {}", path));
                         tar.append_dir(&path, ".")?;
                     }
                     tar::EntryType::Regular
@@ -338,7 +373,7 @@ fn pack_archive(
                     | tar::EntryType::GNULongName
                     | tar::EntryType::XGlobalHeader
                     | tar::EntryType::XHeader => {
-                        println!("adding file {}", path);
+                        progress_bar.set_message(format!("adding file: {}", path));
 
                         // read exactly the size of the current entry
                         let mut entry_bytes =
@@ -346,11 +381,15 @@ fn pack_archive(
                         entry.read_exact(&mut entry_bytes)?;
 
                         if infer::is_archive(&entry_bytes) {
-                            println!("inner archive: {}", path);
+                            progress_bar.set_message(format!("inner archive: {}", path));
                             let mut inner_filter_list = retain_inner_vec(filter_list, &path)?;
                             if inner_filter_list.len() > 0 {
-                                let archive_vec =
-                                    pack(entry_bytes, &mut inner_filter_list, compression_level)?;
+                                let archive_vec = pack(
+                                    progress_bar,
+                                    entry_bytes,
+                                    &mut inner_filter_list,
+                                    compression_level,
+                                )?;
                                 // header size needs correction as we removed few files
                                 let mut header = entry.header().clone();
                                 header.set_size(archive_vec.len().try_into()?);
@@ -363,7 +402,7 @@ fn pack_archive(
                     tar::EntryType::Symlink
                     | tar::EntryType::Link
                     | tar::EntryType::GNULongLink => {
-                        println!("adding link {}", path);
+                        progress_bar.set_message(format!("adding link: {}", path));
                         tar.append_link(
                             entry.header().clone().borrow_mut(),
                             &path,
@@ -373,7 +412,7 @@ fn pack_archive(
                                 .unwrap_or(entry.header().path()?),
                         )?;
                     }
-                    _ => println!("unhandled type {}", path),
+                    _ => progress_bar.set_message(format!("unhandled type: {}", path)),
                 }
             }
         }
