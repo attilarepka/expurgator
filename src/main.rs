@@ -466,4 +466,67 @@ mod tests {
 
         assert!(parse_csv_file(file.path().to_str().unwrap(), 5, false).is_err());
     }
+
+    #[test]
+    fn test_infer_input_file() {
+        let buf = [0x50, 0x4B, 0x3, 0x4];
+        assert_eq!(infer_input_file(&buf).unwrap(), "application/zip");
+
+        let buf = [0xFF, 0xD8, 0xFF, 0xAA];
+        assert!(infer_input_file(&buf).is_err());
+    }
+
+    #[test]
+    fn test_create_tar_encoder() -> Result<(), Box<dyn std::error::Error>> {
+        let mut input = Vec::new();
+        create_tar_encoder(&mut input, "application/gzip", 6)?;
+        create_tar_encoder(&mut input, "application/x-bzip2", 6)?;
+        create_tar_encoder(&mut input, "application/x-xz", 6)?;
+        create_tar_encoder(&mut input, "application/x-tar", 6)?;
+        assert!(create_tar_encoder(&mut input, "invalid", 6).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_tar_decoder() -> Result<(), Box<dyn std::error::Error>> {
+        let mut input = Vec::new();
+        create_tar_decoder(&mut input, "application/gzip")?;
+        create_tar_decoder(&mut input, "application/x-bzip2")?;
+        create_tar_decoder(&mut input, "application/x-xz")?;
+        create_tar_decoder(&mut input, "application/x-tar")?;
+        assert!(create_tar_decoder(&mut input, "invalid").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_file_as_byte_vec() {
+        let payload = "abcd";
+        let file = assert_fs::NamedTempFile::new("input.csv").unwrap();
+        file.write_str(payload).unwrap();
+
+        assert_eq!(
+            get_file_as_byte_vec(file.path().to_str().unwrap()).unwrap(),
+            payload.as_bytes()
+        );
+
+        assert!(get_file_as_byte_vec("nonexistent_file").is_err());
+    }
+
+    #[test]
+    fn test_retain_inner_vec() {
+        let mut input = Vec::new();
+        input.push(PathBuf::from("1/2"));
+        input.push(PathBuf::from("2/2"));
+        input.push(PathBuf::from("3/3"));
+        input.push(PathBuf::from("3/4"));
+
+        let output = retain_inner_vec(&mut input, "3").unwrap();
+
+        assert_eq!(input.len(), 2);
+        assert_eq!(input[0].to_str().unwrap(), "1/2");
+        assert_eq!(input[1].to_str().unwrap(), "2/2");
+        assert_eq!(output.len(), 2);
+        assert_eq!(output[0].to_str().unwrap(), "3/3");
+        assert_eq!(output[1].to_str().unwrap(), "3/4");
+    }
 }
