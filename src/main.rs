@@ -250,6 +250,77 @@ fn retain_inner_vec(
     Ok(inner_list)
 }
 
+fn zip_handle_inner_archive(
+    progress_bar: &ProgressBar,
+    mut entry_bytes: Vec<u8>,
+    mut filter_list: &mut Vec<PathBuf>,
+    compression_level: u32,
+    path: &str,
+    options: FileOptions,
+    zip_writer: &mut zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>>,
+) -> Result<(), Box<dyn Error>> {
+    let inner_entry_bytes = std::mem::take(&mut entry_bytes);
+    let archive_vec = pack(
+        progress_bar,
+        inner_entry_bytes,
+        &mut filter_list,
+        compression_level,
+    )?;
+    zip_writer.start_file(path, options)?;
+    zip_writer.write_all(&*archive_vec)?;
+
+    Ok(())
+}
+
+fn process_zip_entry(
+    entry: &mut zip::read::ZipFile,
+    zip_writer: &mut zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>>,
+    filter_list: &mut Vec<PathBuf>,
+    progress_bar: &ProgressBar,
+    compression_level: u32,
+) -> Result<(), Box<dyn Error>> {
+    let path = entry.name().to_owned();
+    let options = FileOptions::default()
+        .compression_level(Some(compression_level.try_into()?))
+        .compression_method(entry.compression())
+        .unix_permissions(entry.unix_mode().unwrap_or(0o777));
+
+    progress_bar.set_message(format!("processing: {}", path));
+
+    if let Some(found_file) = filter_list.iter().position(|e| e.ends_with(&path)) {
+        filter_list.swap_remove(found_file);
+    } else {
+        if entry.is_dir() {
+            zip_writer.add_directory(&path, options)?;
+        }
+        if entry.is_file() {
+            let mut entry_bytes = vec![Default::default(); entry.size().try_into()?];
+            entry.read_exact(&mut entry_bytes)?;
+
+            if infer::is_archive(&entry_bytes) {
+                progress_bar.set_message(format!("inner archive: {}", &path));
+                let mut inner_filter_list = retain_inner_vec(filter_list, &path)?;
+                if inner_filter_list.len() > 0 {
+                    let inner_entry_bytes = std::mem::take(&mut entry_bytes);
+                    zip_handle_inner_archive(
+                        progress_bar,
+                        inner_entry_bytes,
+                        &mut inner_filter_list,
+                        compression_level,
+                        path.as_str(),
+                        options,
+                        zip_writer,
+                    )?;
+                    return Ok(());
+                }
+            }
+            zip_writer.start_file(path, options)?;
+            zip_writer.write_all(&entry_bytes)?;
+        }
+    }
+    Ok(())
+}
+
 fn pack_zip(
     progress_bar: &ProgressBar,
     archive_vec: Vec<u8>,
@@ -266,47 +337,13 @@ fn pack_zip(
 
         for i in 0..zip_entries.len() {
             let mut entry = zip_entries.by_index(i)?;
-            let path = entry.name().to_owned();
-            let options = FileOptions::default()
-                .compression_level(Some(compression_level.try_into()?))
-                .compression_method(entry.compression())
-                .unix_permissions(entry.unix_mode().unwrap_or(0o777));
-
-            progress_bar.set_message(format!("processing: {}", path));
-
-            if let Some(found_file) = filter_list.iter().position(|e| e.ends_with(&path)) {
-                filter_list.swap_remove(found_file);
-            } else {
-                if entry.is_dir() {
-                    zip.add_directory(path, options)?;
-                    continue;
-                }
-                if entry.is_file() {
-                    let mut entry_bytes = vec![Default::default(); entry.size().try_into()?];
-                    entry.read_exact(&mut entry_bytes)?;
-
-                    if infer::is_archive(&entry_bytes) {
-                        progress_bar.set_message(format!("inner archive: {}", path));
-                        let mut inner_filter_list = retain_inner_vec(filter_list, &path)?;
-                        if inner_filter_list.len() > 0 {
-                            let archive_vec = pack(
-                                progress_bar,
-                                entry_bytes,
-                                &mut inner_filter_list,
-                                compression_level,
-                            )?;
-                            zip.start_file(path, options)?;
-                            zip.write_all(&*archive_vec)?;
-
-                            continue;
-                        }
-                    }
-                    zip.start_file(path, options)?;
-                    zip.write_all(&entry_bytes)?;
-
-                    continue;
-                }
-            }
+            process_zip_entry(
+                &mut entry,
+                &mut zip,
+                filter_list,
+                progress_bar,
+                compression_level,
+            )?;
         }
         zip.finish()?;
     }
