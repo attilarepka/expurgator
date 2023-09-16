@@ -101,7 +101,7 @@ fn pack(
     match mime_type.as_str() {
         "application/zip" => pack_zip(&progress_bar, input_bytes, filter_list, compression_level),
         "application/gzip" | "application/x-bzip2" | "application/x-xz" | "application/x-tar" => {
-            pack_archive(
+            pack_tar(
                 &progress_bar,
                 input_bytes,
                 filter_list,
@@ -360,7 +360,30 @@ fn prompt_error(progress_bar: &ProgressBar) -> Result<bool, Box<dyn Error>> {
     }
 }
 
-fn pack_archive(
+fn tar_handle_inner_archive(
+    progress_bar: &ProgressBar,
+    input_bytes: Vec<u8>,
+    filter_list: &mut Vec<PathBuf>,
+    path: &str,
+    compression_level: u32,
+) -> Result<(Vec<u8>, bool), Box<dyn Error>> {
+    if infer::is_archive(&input_bytes) {
+        progress_bar.set_message(format!("inner archive: {}", path));
+        let mut inner_filter_list = retain_inner_vec(filter_list, &path)?;
+        if inner_filter_list.len() > 0 {
+            let inner_entry_bytes = pack(
+                progress_bar,
+                input_bytes,
+                &mut inner_filter_list,
+                compression_level,
+            )?;
+            return Ok((inner_entry_bytes, true));
+        }
+    }
+    Ok((input_bytes, false))
+}
+
+fn pack_tar(
     progress_bar: &ProgressBar,
     input_bytes: Vec<u8>,
     filter_list: &mut Vec<PathBuf>,
@@ -398,38 +421,25 @@ fn pack_archive(
                             | tar::EntryType::GNULongName
                             | tar::EntryType::XGlobalHeader
                             | tar::EntryType::XHeader => {
+                                progress_bar.set_message(format!("adding file: {}", path));
+
                                 // read exactly the size of the current entry
                                 let mut inner_entry =
                                     vec![Default::default(); entry.header().size()?.try_into()?];
                                 entry.read_exact(&mut inner_entry)?;
 
-                                if infer::is_archive(&inner_entry) {
-                                    progress_bar.set_message(format!("inner archive: {}", path));
-                                    let mut inner_filter_list =
-                                        retain_inner_vec(filter_list, &path)?;
-                                    if inner_filter_list.len() > 0 {
-                                        let inner_entry_bytes = pack(
-                                            progress_bar,
-                                            inner_entry,
-                                            &mut inner_filter_list,
-                                            compression_level,
-                                        )?;
-                                        // header size needs correction as we removed few files
-                                        let mut header = entry.header().clone();
-                                        header.set_size(inner_entry_bytes.len().try_into()?);
-                                        tar_writer.append_data(
-                                            &mut header,
-                                            &path,
-                                            &*inner_entry_bytes,
-                                        )?;
-                                        continue;
-                                    }
-                                }
-                                tar_writer.append_data(
-                                    entry.header().clone().borrow_mut(),
+                                let (inner_entry, is_archive) = tar_handle_inner_archive(
+                                    progress_bar,
+                                    inner_entry,
+                                    filter_list,
                                     &path,
-                                    &*inner_entry,
+                                    compression_level,
                                 )?;
+                                let mut header = entry.header().clone();
+                                if is_archive {
+                                    header.set_size(inner_entry.len().try_into()?);
+                                }
+                                tar_writer.append_data(&mut header, &path, &*inner_entry)?;
                             }
                             tar::EntryType::Symlink
                             | tar::EntryType::Link
