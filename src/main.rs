@@ -55,7 +55,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let compression_level = parse_compression_level(args.compression_level)?;
 
-    let archive_vec = get_file_as_byte_vec(&args.input_file)?;
+    let input_bytes = get_file_as_byte_vec(&args.input_file)?;
 
     let mut filter_list = parse_csv_file(&args.csv_file, args.csv_index, args.has_header)?;
     filter_list = prompt_csv_record(filter_list)?;
@@ -78,7 +78,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let result_bytes = pack(
         &progress_bar,
-        archive_vec,
+        input_bytes,
         &mut filter_list,
         compression_level,
     )?;
@@ -93,17 +93,17 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn pack(
     progress_bar: &ProgressBar,
-    archive_vec: Vec<u8>,
+    input_bytes: Vec<u8>,
     filter_list: &mut Vec<PathBuf>,
     compression_level: u32,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
-    let mime_type = infer_input_file(&archive_vec)?;
+    let mime_type = infer_input_file(&input_bytes)?;
     match mime_type.as_str() {
-        "application/zip" => pack_zip(&progress_bar, archive_vec, filter_list, compression_level),
+        "application/zip" => pack_zip(&progress_bar, input_bytes, filter_list, compression_level),
         "application/gzip" | "application/x-bzip2" | "application/x-xz" | "application/x-tar" => {
-            pack_archive(
+            pack_tar(
                 &progress_bar,
-                archive_vec,
+                input_bytes,
                 filter_list,
                 compression_level,
                 mime_type.as_str(),
@@ -180,51 +180,47 @@ fn infer_input_file(file_bytes: &[u8]) -> Result<String, Box<dyn Error>> {
 }
 
 fn create_tar_encoder<'a>(
-    archive_vec: &'a mut Vec<u8>,
+    writer: &'a mut Vec<u8>,
     mime_type: &str,
     compression_level: u32,
 ) -> Result<Box<dyn Write + 'a>, Box<dyn Error>> {
     match mime_type {
         "application/gzip" => {
-            let writer = Box::new(GzEncoder::new(archive_vec, flate2::Compression::new(compression_level)));
-            Ok(writer)
+            let result = Box::new(GzEncoder::new(writer, flate2::Compression::new(compression_level)));
+            Ok(result)
         }
         "application/x-bzip2" => {
-            let writer = Box::new(BzEncoder::new(archive_vec, bzip2::Compression::new(compression_level)));
-            Ok(writer)
+            let result = Box::new(BzEncoder::new(writer, bzip2::Compression::new(compression_level)));
+            Ok(result)
         }
         "application/x-xz" => {
-            let writer = Box::new(XzEncoder::new(archive_vec, compression_level));
-            Ok(writer)
+            let result = Box::new(XzEncoder::new(writer, compression_level));
+            Ok(result)
         }
         "application/x-tar" => {
-            let writer = Box::new(BufWriter::new(archive_vec));
-            Ok(writer)
+            let result = Box::new(BufWriter::new(writer));
+            Ok(result)
         }
         _ => Err("Unsupported Encoding Format: The provided MIME type does not correspond to a supported encoding format.")?,
     }
 }
 
 fn create_tar_decoder<'a>(
-    archive_vec: &'a [u8],
+    reader: &'a [u8],
     mime_type: &str,
 ) -> Result<Box<dyn Read + 'a>, Box<dyn Error>> {
     match mime_type {
         "application/gzip" => {
-            let reader = Box::new(GzDecoder::new(archive_vec));
-            Ok(reader)
+            Ok(Box::new(GzDecoder::new(reader)))
         }
         "application/x-bzip2" => {
-            let reader = Box::new(BzDecoder::new(archive_vec));
-            Ok(reader)
+            Ok(Box::new(BzDecoder::new(reader)))
         }
         "application/x-xz" => {
-            let reader = Box::new(XzDecoder::new(archive_vec));
-            Ok(reader)
+            Ok(Box::new(XzDecoder::new(reader)))
         }
         "application/x-tar" => {
-            let reader = Box::new(BufReader::new(archive_vec));
-            Ok(reader)
+            Ok(Box::new(BufReader::new(reader)))
         }
         _ => Err("Unsupported Decoding Format: The provided MIME type does not correspond to a supported decoding format.")?,
     }
@@ -250,13 +246,83 @@ fn retain_inner_vec(
     Ok(inner_list)
 }
 
+fn zip_handle_inner_archive(
+    progress_bar: &ProgressBar,
+    entry_bytes: Vec<u8>,
+    mut filter_list: &mut Vec<PathBuf>,
+    compression_level: u32,
+    path: &str,
+    options: FileOptions,
+    zip_writer: &mut zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>>,
+) -> Result<(), Box<dyn Error>> {
+    let input_bytes = pack(
+        progress_bar,
+        entry_bytes,
+        &mut filter_list,
+        compression_level,
+    )?;
+    zip_writer.start_file(path, options)?;
+    zip_writer.write_all(&*input_bytes)?;
+
+    Ok(())
+}
+
+fn process_zip_entry(
+    entry: &mut zip::read::ZipFile,
+    zip_writer: &mut zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>>,
+    filter_list: &mut Vec<PathBuf>,
+    progress_bar: &ProgressBar,
+    compression_level: u32,
+) -> Result<(), Box<dyn Error>> {
+    let path = entry.name().to_owned();
+    let options = FileOptions::default()
+        .compression_level(Some(compression_level.try_into()?))
+        .compression_method(entry.compression())
+        .unix_permissions(entry.unix_mode().unwrap_or(0o777));
+
+    progress_bar.set_message(format!("processing: {}", path));
+
+    if let Some(found_file) = filter_list.iter().position(|e| e.ends_with(&path)) {
+        filter_list.swap_remove(found_file);
+    } else {
+        if entry.is_dir() {
+            zip_writer.add_directory(&path, options)?;
+        }
+        if entry.is_file() {
+            let mut entry_bytes = vec![Default::default(); entry.size().try_into()?];
+            entry.read_exact(&mut entry_bytes)?;
+
+            if infer::is_archive(&entry_bytes) {
+                progress_bar.set_message(format!("inner archive: {}", &path));
+                let mut inner_filter_list = retain_inner_vec(filter_list, &path)?;
+                if inner_filter_list.len() > 0 {
+                    let inner_entry_bytes = std::mem::take(&mut entry_bytes);
+                    zip_handle_inner_archive(
+                        progress_bar,
+                        inner_entry_bytes,
+                        &mut inner_filter_list,
+                        compression_level,
+                        path.as_str(),
+                        options,
+                        zip_writer,
+                    )?;
+                    return Ok(());
+                }
+            }
+            zip_writer.start_file(path, options)?;
+            zip_writer.write_all(&entry_bytes)?;
+        }
+    }
+    Ok(())
+}
+
 fn pack_zip(
     progress_bar: &ProgressBar,
-    archive_vec: Vec<u8>,
+    input_bytes: Vec<u8>,
     filter_list: &mut Vec<PathBuf>,
     compression_level: u32,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
-    let decoder = std::io::Cursor::new(&*archive_vec);
+    let decoder = std::io::Cursor::new(input_bytes);
 
     let mut zip_entries = zip::ZipArchive::new(decoder).unwrap();
     let mut result: Vec<u8> = Vec::new();
@@ -266,157 +332,140 @@ fn pack_zip(
 
         for i in 0..zip_entries.len() {
             let mut entry = zip_entries.by_index(i)?;
-            let path = entry.name().to_owned();
-            let options = FileOptions::default()
-                .compression_level(Some(compression_level.try_into()?))
-                .compression_method(entry.compression())
-                .unix_permissions(entry.unix_mode().unwrap_or(0o777));
-
-            progress_bar.set_message(format!("processing: {}", path));
-
-            if let Some(found_file) = filter_list.iter().position(|e| e.ends_with(&path)) {
-                filter_list.swap_remove(found_file);
-            } else {
-                if entry.is_dir() {
-                    zip.add_directory(path, options)?;
-                    continue;
-                }
-                if entry.is_file() {
-                    let mut entry_bytes = vec![Default::default(); entry.size().try_into()?];
-                    entry.read_exact(&mut entry_bytes)?;
-
-                    if infer::is_archive(&entry_bytes) {
-                        progress_bar.set_message(format!("inner archive: {}", path));
-                        let mut inner_filter_list = retain_inner_vec(filter_list, &path)?;
-                        if inner_filter_list.len() > 0 {
-                            let archive_vec = pack(
-                                progress_bar,
-                                entry_bytes,
-                                &mut inner_filter_list,
-                                compression_level,
-                            )?;
-                            zip.start_file(path, options)?;
-                            zip.write_all(&*archive_vec)?;
-
-                            continue;
-                        }
-                    }
-                    zip.start_file(path, options)?;
-                    zip.write_all(&entry_bytes)?;
-
-                    continue;
-                }
-            }
+            process_zip_entry(
+                &mut entry,
+                &mut zip,
+                filter_list,
+                progress_bar,
+                compression_level,
+            )?;
         }
         zip.finish()?;
     }
     Ok(result)
 }
 
-fn pack_archive(
+fn prompt_error(progress_bar: &ProgressBar) -> Result<bool, Box<dyn Error>> {
+    let mut ans = Ok(false);
+    progress_bar.suspend(|| {
+        ans = Confirm::new("Do you want to continue?")
+            .with_default(false)
+            .with_help_message("Failed to process tar entry, this data will be skipped")
+            .prompt();
+    });
+    match ans {
+        Ok(true) => return Ok(true),
+        Ok(false) => return Err("User interrupted, exiting")?,
+        Err(err) => return Err(err)?,
+    }
+}
+
+fn tar_handle_inner_archive(
     progress_bar: &ProgressBar,
-    archive_vec: Vec<u8>,
+    input_bytes: Vec<u8>,
+    filter_list: &mut Vec<PathBuf>,
+    path: &str,
+    compression_level: u32,
+) -> Result<(Vec<u8>, bool), Box<dyn Error>> {
+    if infer::is_archive(&input_bytes) {
+        progress_bar.set_message(format!("inner archive: {}", path));
+        let mut inner_filter_list = retain_inner_vec(filter_list, &path)?;
+        if inner_filter_list.len() > 0 {
+            let inner_entry_bytes = pack(
+                progress_bar,
+                input_bytes,
+                &mut inner_filter_list,
+                compression_level,
+            )?;
+            return Ok((inner_entry_bytes, true));
+        }
+    }
+    Ok((input_bytes, false))
+}
+
+fn pack_tar(
+    progress_bar: &ProgressBar,
+    input_bytes: Vec<u8>,
     filter_list: &mut Vec<PathBuf>,
     compression_level: u32,
     mime_type: &str,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
-    let decoder = create_tar_decoder(&*archive_vec, mime_type)?;
-
+    let decoder = create_tar_decoder(&*input_bytes, mime_type)?;
     let mut tar_archive = tar::Archive::new(decoder);
-    let tar_entries = tar_archive.entries()?;
 
-    let mut result: Vec<u8> = Vec::new();
+    let mut result = Vec::new();
     {
         let encoder = create_tar_encoder(&mut result, mime_type, compression_level)?;
+        let mut tar_writer = tar::Builder::new(encoder);
+        for entry in tar_archive.entries()? {
+            match entry {
+                Ok(mut entry) => {
+                    let path = (*entry.path()?).to_owned();
+                    let path = path.to_string_lossy().to_string();
+                    progress_bar.set_message(format!("processing: {}", path));
 
-        let mut tar = tar::Builder::new(encoder);
+                    if let Some(found_file) = filter_list.iter().position(|e| e.ends_with(&path)) {
+                        filter_list.swap_remove(found_file);
+                    } else {
+                        match entry.header().entry_type() {
+                            tar::EntryType::Directory => {
+                                progress_bar.set_message(format!("adding directory: {}", path));
+                                tar_writer.append_dir(&path, ".")?;
+                            }
+                            tar::EntryType::Regular
+                            | tar::EntryType::GNUSparse
+                            | tar::EntryType::Continuous
+                            | tar::EntryType::Fifo
+                            | tar::EntryType::Char
+                            | tar::EntryType::Block
+                            | tar::EntryType::GNULongName
+                            | tar::EntryType::XGlobalHeader
+                            | tar::EntryType::XHeader => {
+                                progress_bar.set_message(format!("adding file: {}", path));
 
-        for entry in tar_entries {
-            let mut entry = match entry {
-                Err(err) => {
-                    let mut ans = Ok(false);
-                    progress_bar.suspend(|| {
-                        ans = Confirm::new("Do you want to continue?")
-                            .with_default(false)
-                            .with_help_message(
-                                "Failed to process tar entry, this data will be skipped",
-                            )
-                            .prompt();
-                    });
-                    match ans {
-                        Ok(true) => continue,
-                        Ok(false) => Err(err)?,
-                        Err(err) => Err(err)?,
-                    }
-                }
-                Ok(res) => res,
-            };
+                                // read exactly the size of the current entry
+                                let mut inner_entry =
+                                    vec![Default::default(); entry.header().size()?.try_into()?];
+                                entry.read_exact(&mut inner_entry)?;
 
-            let path = (*entry.path()?).to_owned();
-            let path = path.to_str().unwrap_or("");
-            progress_bar.set_message(format!("processing: {}", path));
-
-            if let Some(found_file) = filter_list.iter().position(|e| e.ends_with(&path)) {
-                filter_list.swap_remove(found_file);
-            } else {
-                match entry.header().entry_type() {
-                    tar::EntryType::Directory => {
-                        progress_bar.set_message(format!("adding directory: {}", path));
-                        tar.append_dir(&path, ".")?;
-                    }
-                    tar::EntryType::Regular
-                    | tar::EntryType::GNUSparse
-                    | tar::EntryType::Continuous
-                    | tar::EntryType::Fifo
-                    | tar::EntryType::Char
-                    | tar::EntryType::Block
-                    | tar::EntryType::GNULongName
-                    | tar::EntryType::XGlobalHeader
-                    | tar::EntryType::XHeader => {
-                        progress_bar.set_message(format!("adding file: {}", path));
-
-                        // read exactly the size of the current entry
-                        let mut entry_bytes =
-                            vec![Default::default(); entry.header().size()?.try_into()?];
-                        entry.read_exact(&mut entry_bytes)?;
-
-                        if infer::is_archive(&entry_bytes) {
-                            progress_bar.set_message(format!("inner archive: {}", path));
-                            let mut inner_filter_list = retain_inner_vec(filter_list, &path)?;
-                            if inner_filter_list.len() > 0 {
-                                let archive_vec = pack(
+                                let (inner_entry, is_archive) = tar_handle_inner_archive(
                                     progress_bar,
-                                    entry_bytes,
-                                    &mut inner_filter_list,
+                                    inner_entry,
+                                    filter_list,
+                                    &path,
                                     compression_level,
                                 )?;
-                                // header size needs correction as we removed few files
                                 let mut header = entry.header().clone();
-                                header.set_size(archive_vec.len().try_into()?);
-                                tar.append_data(&mut header, &path, &*archive_vec)?;
-                                continue;
+                                if is_archive {
+                                    header.set_size(inner_entry.len().try_into()?);
+                                }
+                                tar_writer.append_data(&mut header, &path, &*inner_entry)?;
                             }
+                            tar::EntryType::Symlink
+                            | tar::EntryType::Link
+                            | tar::EntryType::GNULongLink => {
+                                progress_bar.set_message(format!("adding link: {}", path));
+                                tar_writer.append_link(
+                                    entry.header().clone().borrow_mut(),
+                                    &path,
+                                    &entry
+                                        .header()
+                                        .link_name()?
+                                        .unwrap_or(entry.header().path()?),
+                                )?;
+                            }
+                            _ => progress_bar.set_message(format!("unhandled type: {}", path)),
                         }
-                        tar.append_data(entry.header().clone().borrow_mut(), &path, &*entry_bytes)?;
                     }
-                    tar::EntryType::Symlink
-                    | tar::EntryType::Link
-                    | tar::EntryType::GNULongLink => {
-                        progress_bar.set_message(format!("adding link: {}", path));
-                        tar.append_link(
-                            entry.header().clone().borrow_mut(),
-                            &path,
-                            &entry
-                                .header()
-                                .link_name()?
-                                .unwrap_or(entry.header().path()?),
-                        )?;
+                }
+                Err(_) => {
+                    if prompt_error(progress_bar)? {
+                        continue;
                     }
-                    _ => progress_bar.set_message(format!("unhandled type: {}", path)),
                 }
             }
         }
-        tar.finish()?;
+        tar_writer.finish()?;
     }
     Ok(result)
 }
@@ -465,5 +514,66 @@ mod tests {
         assert_eq!(output[0].to_str().unwrap(), "some/other/path");
 
         assert!(parse_csv_file(file.path().to_str().unwrap(), 5, false).is_err());
+    }
+
+    #[test]
+    fn test_infer_input_file() {
+        let buf = [0x50, 0x4B, 0x3, 0x4];
+        assert_eq!(infer_input_file(&buf).unwrap(), "application/zip");
+
+        let buf = [0xFF, 0xD8, 0xFF, 0xAA];
+        assert!(infer_input_file(&buf).is_err());
+    }
+
+    #[test]
+    fn test_create_tar_encoder() {
+        let mut input: Vec<u8> = Vec::new();
+        assert!(create_tar_encoder(&mut input, "application/gzip", 6).is_ok());
+        assert!(create_tar_encoder(&mut input, "application/x-bzip2", 6).is_ok());
+        assert!(create_tar_encoder(&mut input, "application/x-xz", 6).is_ok());
+        assert!(create_tar_encoder(&mut input, "application/x-tar", 6).is_ok());
+        assert!(create_tar_encoder(&mut input, "invalid", 6).is_err());
+    }
+
+    #[test]
+    fn test_create_tar_decoder() {
+        let input = Vec::new();
+        assert!(create_tar_decoder(&input, "application/gzip").is_ok());
+        assert!(create_tar_decoder(&input, "application/x-bzip2").is_ok());
+        assert!(create_tar_decoder(&input, "application/x-xz").is_ok());
+        assert!(create_tar_decoder(&input, "application/x-tar").is_ok());
+        assert!(create_tar_decoder(&input, "invalid").is_err());
+    }
+
+    #[test]
+    fn test_get_file_as_byte_vec() {
+        let payload = "abcd";
+        let file = assert_fs::NamedTempFile::new("input.csv").unwrap();
+        file.write_str(payload).unwrap();
+
+        assert_eq!(
+            get_file_as_byte_vec(file.path().to_str().unwrap()).unwrap(),
+            payload.as_bytes()
+        );
+
+        assert!(get_file_as_byte_vec("nonexistent_file").is_err());
+    }
+
+    #[test]
+    fn test_retain_inner_vec() {
+        let mut input = Vec::new();
+        input.push(PathBuf::from("1/2"));
+        input.push(PathBuf::from("2/2"));
+        input.push(PathBuf::from("3/3"));
+        input.push(PathBuf::from("3/4"));
+
+        let output = retain_inner_vec(&mut input, "3").unwrap();
+
+        assert_eq!(input.len(), 2);
+        assert_eq!(input[0].to_str().unwrap(), "1/2");
+        assert_eq!(input[1].to_str().unwrap(), "2/2");
+        assert_eq!(output.len(), 2);
+        assert_eq!(output[0].to_str().unwrap(), "3/3");
+        assert_eq!(output[1].to_str().unwrap(), "3/4");
     }
 }
