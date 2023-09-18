@@ -255,14 +255,14 @@ fn zip_handle_inner_archive(
     options: FileOptions,
     zip_writer: &mut zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>>,
 ) -> Result<(), Box<dyn Error>> {
-    let input_bytes = pack(
+    let result = pack(
         progress_bar,
         entry_bytes,
         &mut filter_list,
         compression_level,
     )?;
     zip_writer.start_file(path, options)?;
-    zip_writer.write_all(&*input_bytes)?;
+    zip_writer.write_all(&*result)?;
 
     Ok(())
 }
@@ -296,10 +296,9 @@ fn process_zip_entry(
                 progress_bar.set_message(format!("inner archive: {}", &path));
                 let mut inner_filter_list = retain_inner_vec(filter_list, &path)?;
                 if inner_filter_list.len() > 0 {
-                    let inner_entry_bytes = std::mem::take(&mut entry_bytes);
                     zip_handle_inner_archive(
                         progress_bar,
-                        inner_entry_bytes,
+                        entry_bytes,
                         &mut inner_filter_list,
                         compression_level,
                         path.as_str(),
@@ -345,7 +344,7 @@ fn pack_zip(
     Ok(result)
 }
 
-fn prompt_error(progress_bar: &ProgressBar) -> Result<bool, Box<dyn Error>> {
+fn prompt_error(progress_bar: &ProgressBar) -> Result<(), Box<dyn Error>> {
     let mut ans = Ok(false);
     progress_bar.suspend(|| {
         ans = Confirm::new("Do you want to continue?")
@@ -354,7 +353,7 @@ fn prompt_error(progress_bar: &ProgressBar) -> Result<bool, Box<dyn Error>> {
             .prompt();
     });
     match ans {
-        Ok(true) => return Ok(true),
+        Ok(true) => return Ok(()),
         Ok(false) => return Err("User interrupted, exiting")?,
         Err(err) => return Err(err)?,
     }
@@ -459,9 +458,7 @@ fn pack_tar(
                     }
                 }
                 Err(_) => {
-                    if prompt_error(progress_bar)? {
-                        continue;
-                    }
+                    prompt_error(progress_bar)?;
                 }
             }
         }
