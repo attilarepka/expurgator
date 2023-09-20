@@ -16,7 +16,6 @@ jobs:
     - run: cargo pkgid
     - run: 'echo "$(cargo pkgid | cut -d# -f2)"'
     - id: rustversion
-      run: 'echo "::set-output name=rustversion::$(cargo pkgid | cut -d# -f2)"'
       run: echo "rustversion=$(cargo pkgid | cut -d# -f2)" >> $GITHUB_OUTPUT
   build:
     needs: quickcheck
