@@ -70,7 +70,7 @@ jobs:
     - name: build
       run: cargo build --release
     - name: zip up windows binaries
-      run: Compress-Archive -Path .\target\release\expurgator -Destination expurgator_${{needs.quickcheck.outputs.version}}_windows.zip
+      run: Compress-Archive -Path target\release\expurgator -Destination expurgator_${{needs.quickcheck.outputs.version}}_windows.zip
     - name: upload windows artifact
       uses: actions/upload-artifact@v2
       with:
