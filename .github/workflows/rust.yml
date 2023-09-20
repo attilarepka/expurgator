@@ -42,7 +42,7 @@ jobs:
       with:
         toml_path: .
     - name: upload deb artifact
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v3
       with:
         name: amd64deb
         path: ./target/x86_64-unknown-linux-musl/debian/*
@@ -57,7 +57,7 @@ jobs:
     - name: zip up macos binaries
       run: 'zip -j expurgator_${{needs.quickcheck.outputs.version}}_macos.zip ./target/release/expurgator ./target/release/expurgator'
     - name: upload macos artifact
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v3
       with:
         name: macos
         path: 'expurgator_${{needs.quickcheck.outputs.version}}_macos.zip'
@@ -72,7 +72,7 @@ jobs:
     - name: zip up windows binaries
       run: Compress-Archive -Path target\release\expurgator.exe -Destination expurgator_${{needs.quickcheck.outputs.version}}_windows.zip
     - name: upload windows artifact
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v3
       with:
         name: windows
         path: 'expurgator_${{needs.quickcheck.outputs.version}}_windows.zip'
@@ -89,18 +89,18 @@ jobs:
         toml_path: .
         cmd: cargo build --release --target=x86_64-unknown-linux-musl
     - name: upload daemon artifact
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v3
       with:
         name: amd64binaries
         path: ./target/x86_64-unknown-linux-musl/release/expurgator
     - name: upload expurgator artifact
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v3
       with:
         name: amd64binaries
         path: ./target/x86_64-unknown-linux-musl/release/expurgator
     - run: 'zip -j amd64binaries.zip ./target/x86_64-unknown-linux-musl/release/expurgator ./target/x86_64-unknown-linux-musl/release/expurgator'
     - name: upload zip artifact
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v3
       with:
         name: amd64binaries
         path: amd64binaries.zip
@@ -120,7 +120,7 @@ jobs:
           body: 'Change Me'
           draft: true
           prerelease: false
-      - uses: actions/download-artifact@v2
+      - uses: actions/download-artifact@v3
       - run: ls -lha
       - name: upload amd64 deb release asset
         uses: actions/upload-release-asset@v1
