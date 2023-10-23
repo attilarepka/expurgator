@@ -179,29 +179,71 @@ fn infer_input_file(file_bytes: &[u8]) -> Result<String, Box<dyn Error>> {
     Err("Unsupported File Type: Only archive file types are supported.")?
 }
 
-fn create_tar_encoder<'a>(
-    writer: &'a mut Vec<u8>,
-    mime_type: &str,
-    compression_level: u32,
-) -> Result<Box<dyn Write + 'a>, Box<dyn Error>> {
-    match mime_type {
-        "application/gzip" => {
-            let result = Box::new(GzEncoder::new(writer, flate2::Compression::new(compression_level)));
-            Ok(result)
+trait WriteEncoder: Write {
+    fn inner(self: Box<Self>) -> Result<Vec<u8>, Box<dyn Error>>;
+}
+
+impl WriteEncoder for GzEncoder<Vec<u8>> {
+    fn inner(self: Box<Self>) -> Result<Vec<u8>, Box<dyn Error>> {
+        Ok(self.finish()?)
+    }
+}
+
+impl WriteEncoder for BzEncoder<Vec<u8>> {
+    fn inner(self: Box<Self>) -> Result<Vec<u8>, Box<dyn Error>> {
+        Ok(self.finish()?)
+    }
+}
+
+impl WriteEncoder for XzEncoder<Vec<u8>> {
+    fn inner(self: Box<Self>) -> Result<Vec<u8>, Box<dyn Error>> {
+        Ok(self.finish()?)
+    }
+}
+
+impl WriteEncoder for BufWriter<Vec<u8>> {
+    fn inner(self: Box<Self>) -> Result<Vec<u8>, Box<dyn Error>> {
+        Ok(self.into_inner()?)
+    }
+}
+
+enum TarEncoder {
+    Gzip(GzEncoder<Vec<u8>>),
+    Bzip2(BzEncoder<Vec<u8>>),
+    Xz2(XzEncoder<Vec<u8>>),
+    XTar(BufWriter<Vec<u8>>),
+}
+
+impl TarEncoder {
+    fn new(mime_type: &str, compression_level: u32) -> Result<Self, Box<dyn Error>> {
+        match mime_type {
+            "application/gzip" => {
+                let result = GzEncoder::new(Vec::new(), flate2::Compression::new(compression_level));
+                Ok(TarEncoder::Gzip(result))
+            }
+            "application/x-bzip2" => {
+                let reuslt = BzEncoder::new(Vec::new(), bzip2::Compression::new(compression_level));
+                Ok(TarEncoder::Bzip2(reuslt))
+            }
+            "application/x-xz" => {
+                let result = XzEncoder::new(Vec::new(), compression_level);
+                Ok(TarEncoder::Xz2(result))
+            }
+            "application/x-tar" => {
+                let result = BufWriter::new(Vec::new());
+                Ok(TarEncoder::XTar(result))
+            }
+            _ => Err(format!("Unsupported Encoding Format: The provided MIME type does not correspond to a supported encoding format.").into()),
         }
-        "application/x-bzip2" => {
-            let result = Box::new(BzEncoder::new(writer, bzip2::Compression::new(compression_level)));
-            Ok(result)
+    }
+
+    fn encoder(self) -> Box<dyn WriteEncoder> {
+        match self {
+            TarEncoder::Gzip(result) => Box::new(result),
+            TarEncoder::Bzip2(result) => Box::new(result),
+            TarEncoder::Xz2(result) => Box::new(result),
+            TarEncoder::XTar(result) => Box::new(result),
         }
-        "application/x-xz" => {
-            let result = Box::new(XzEncoder::new(writer, compression_level));
-            Ok(result)
-        }
-        "application/x-tar" => {
-            let result = Box::new(BufWriter::new(writer));
-            Ok(result)
-        }
-        _ => Err("Unsupported Encoding Format: The provided MIME type does not correspond to a supported encoding format.")?,
     }
 }
 
@@ -392,78 +434,77 @@ fn pack_tar(
     let decoder = create_tar_decoder(&*input_bytes, mime_type)?;
     let mut tar_archive = tar::Archive::new(decoder);
 
-    let mut result = Vec::new();
-    {
-        let encoder = create_tar_encoder(&mut result, mime_type, compression_level)?;
-        let mut tar_writer = tar::Builder::new(encoder);
-        for entry in tar_archive.entries()? {
-            match entry {
-                Ok(mut entry) => {
-                    let path = (*entry.path()?).to_owned();
-                    let path = path.to_string_lossy().to_string();
-                    progress_bar.set_message(format!("processing: {}", path));
+    let tar_encoder = TarEncoder::new(mime_type, compression_level).unwrap();
+    let encoder = tar_encoder.encoder();
+    let mut tar_writer = tar::Builder::new(encoder);
+    for entry in tar_archive.entries()? {
+        match entry {
+            Ok(mut entry) => {
+                let path = (*entry.path()?).to_owned();
+                let path = path.to_string_lossy().to_string();
+                progress_bar.set_message(format!("processing: {}", path));
 
-                    if let Some(found_file) = filter_list.iter().position(|e| e.ends_with(&path)) {
-                        filter_list.swap_remove(found_file);
-                    } else {
-                        match entry.header().entry_type() {
-                            tar::EntryType::Directory => {
-                                progress_bar.set_message(format!("adding directory: {}", path));
-                                tar_writer.append_dir(&path, ".")?;
-                            }
-                            tar::EntryType::Regular
-                            | tar::EntryType::GNUSparse
-                            | tar::EntryType::Continuous
-                            | tar::EntryType::Fifo
-                            | tar::EntryType::Char
-                            | tar::EntryType::Block
-                            | tar::EntryType::GNULongName
-                            | tar::EntryType::XGlobalHeader
-                            | tar::EntryType::XHeader => {
-                                progress_bar.set_message(format!("adding file: {}", path));
-
-                                // read exactly the size of the current entry
-                                let mut inner_entry =
-                                    vec![Default::default(); entry.header().size()?.try_into()?];
-                                entry.read_exact(&mut inner_entry)?;
-
-                                let (inner_entry, is_archive) = tar_handle_inner_archive(
-                                    progress_bar,
-                                    inner_entry,
-                                    filter_list,
-                                    &path,
-                                    compression_level,
-                                )?;
-                                let mut header = entry.header().clone();
-                                if is_archive {
-                                    header.set_size(inner_entry.len().try_into()?);
-                                }
-                                tar_writer.append_data(&mut header, &path, &*inner_entry)?;
-                            }
-                            tar::EntryType::Symlink
-                            | tar::EntryType::Link
-                            | tar::EntryType::GNULongLink => {
-                                progress_bar.set_message(format!("adding link: {}", path));
-                                tar_writer.append_link(
-                                    entry.header().clone().borrow_mut(),
-                                    &path,
-                                    &entry
-                                        .header()
-                                        .link_name()?
-                                        .unwrap_or(entry.header().path()?),
-                                )?;
-                            }
-                            _ => progress_bar.set_message(format!("unhandled type: {}", path)),
+                if let Some(found_file) = filter_list.iter().position(|e| e.ends_with(&path)) {
+                    filter_list.swap_remove(found_file);
+                } else {
+                    match entry.header().entry_type() {
+                        tar::EntryType::Directory => {
+                            progress_bar.set_message(format!("adding directory: {}", path));
+                            tar_writer.append_dir(&path, ".")?;
                         }
+                        tar::EntryType::Regular
+                        | tar::EntryType::GNUSparse
+                        | tar::EntryType::Continuous
+                        | tar::EntryType::Fifo
+                        | tar::EntryType::Char
+                        | tar::EntryType::Block
+                        | tar::EntryType::GNULongName
+                        | tar::EntryType::XGlobalHeader
+                        | tar::EntryType::XHeader => {
+                            progress_bar.set_message(format!("adding file: {}", path));
+
+                            // read exactly the size of the current entry
+                            let mut inner_entry =
+                                vec![Default::default(); entry.header().size()?.try_into()?];
+                            entry.read_exact(&mut inner_entry)?;
+
+                            let (inner_entry, is_archive) = tar_handle_inner_archive(
+                                progress_bar,
+                                inner_entry,
+                                filter_list,
+                                &path,
+                                compression_level,
+                            )?;
+                            let mut header = entry.header().clone();
+                            if is_archive {
+                                header.set_size(inner_entry.len().try_into()?);
+                            }
+                            tar_writer.append_data(&mut header, &path, &*inner_entry)?;
+                        }
+                        tar::EntryType::Symlink
+                        | tar::EntryType::Link
+                        | tar::EntryType::GNULongLink => {
+                            progress_bar.set_message(format!("adding link: {}", path));
+                            tar_writer.append_link(
+                                entry.header().clone().borrow_mut(),
+                                &path,
+                                &entry
+                                    .header()
+                                    .link_name()?
+                                    .unwrap_or(entry.header().path()?),
+                            )?;
+                        }
+                        _ => progress_bar.set_message(format!("unhandled type: {}", path)),
                     }
                 }
-                Err(_) => {
-                    prompt_error(progress_bar)?;
-                }
+            }
+            Err(_) => {
+                prompt_error(progress_bar)?;
             }
         }
-        tar_writer.finish()?;
     }
+    let encoder = tar_writer.into_inner()?;
+    let result = encoder.inner().unwrap();
     Ok(result)
 }
 
@@ -524,12 +565,11 @@ mod tests {
 
     #[test]
     fn test_create_tar_encoder() {
-        let mut input: Vec<u8> = Vec::new();
-        assert!(create_tar_encoder(&mut input, "application/gzip", 6).is_ok());
-        assert!(create_tar_encoder(&mut input, "application/x-bzip2", 6).is_ok());
-        assert!(create_tar_encoder(&mut input, "application/x-xz", 6).is_ok());
-        assert!(create_tar_encoder(&mut input, "application/x-tar", 6).is_ok());
-        assert!(create_tar_encoder(&mut input, "invalid", 6).is_err());
+        assert!(TarEncoder::new("application/gzip", 6).is_ok());
+        assert!(TarEncoder::new("application/x-bzip2", 6).is_ok());
+        assert!(TarEncoder::new("application/x-xz", 6).is_ok());
+        assert!(TarEncoder::new("application/x-tar", 6).is_ok());
+        assert!(TarEncoder::new("invalid", 6).is_err());
     }
 
     #[test]
