@@ -65,7 +65,7 @@ Options:
 
 ## Contributing
 
-Open a GitHub issue or pull request.
+Contributions are welcome! Open a GitHub issue or pull request.
 
 ## License
 
