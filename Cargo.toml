@@ -23,6 +23,7 @@ bzip2 = "0.4"
 infer = "0.3"
 clap = { version = "4.1.8", features = ["derive"] }
 csv = "1.1"
+anyhow = "1.0.89"
 
 [dev-dependencies]
 assert_cmd = "2.0.12"

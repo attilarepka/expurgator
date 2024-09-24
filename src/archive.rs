@@ -1,10 +1,10 @@
 use std::{
     borrow::BorrowMut,
-    error::Error,
     io::{BufReader, BufWriter, Read, Write},
     path::PathBuf,
 };
 
+use anyhow::{anyhow, Result};
 use bzip2::{read::BzDecoder, write::BzEncoder};
 use flate2::{read::GzDecoder, write::GzEncoder};
 use indicatif::ProgressBar;
@@ -18,7 +18,7 @@ pub fn pack_archive(
     input_bytes: Vec<u8>,
     filter_list: &mut Vec<PathBuf>,
     compression_level: u32,
-) -> Result<Vec<u8>, Box<dyn Error>> {
+) -> Result<Vec<u8>> {
     let mime_type = infer_input_file(&input_bytes)?;
     match mime_type.as_str() {
         "application/zip" => encode_zip(progress_bar, input_bytes, filter_list, compression_level),
@@ -31,7 +31,7 @@ pub fn pack_archive(
                 mime_type.as_str(),
             )
         }
-        _ => Err(format!(
+        _ => Err(anyhow!(
             "Unsupported File Type: The file with MIME type '{}' is not supported.",
             mime_type
         ))?,
@@ -39,29 +39,29 @@ pub fn pack_archive(
 }
 
 trait WriteEncoder: Write {
-    fn inner(self: Box<Self>) -> Result<Vec<u8>, Box<dyn Error>>;
+    fn inner(self: Box<Self>) -> Result<Vec<u8>>;
 }
 
 impl WriteEncoder for GzEncoder<Vec<u8>> {
-    fn inner(self: Box<Self>) -> Result<Vec<u8>, Box<dyn Error>> {
+    fn inner(self: Box<Self>) -> Result<Vec<u8>> {
         Ok(self.finish()?)
     }
 }
 
 impl WriteEncoder for BzEncoder<Vec<u8>> {
-    fn inner(self: Box<Self>) -> Result<Vec<u8>, Box<dyn Error>> {
+    fn inner(self: Box<Self>) -> Result<Vec<u8>> {
         Ok(self.finish()?)
     }
 }
 
 impl WriteEncoder for XzEncoder<Vec<u8>> {
-    fn inner(self: Box<Self>) -> Result<Vec<u8>, Box<dyn Error>> {
+    fn inner(self: Box<Self>) -> Result<Vec<u8>> {
         Ok(self.finish()?)
     }
 }
 
 impl WriteEncoder for BufWriter<Vec<u8>> {
-    fn inner(self: Box<Self>) -> Result<Vec<u8>, Box<dyn Error>> {
+    fn inner(self: Box<Self>) -> Result<Vec<u8>> {
         Ok(self.into_inner()?)
     }
 }
@@ -74,7 +74,7 @@ enum TarEncoder {
 }
 
 impl TarEncoder {
-    fn new(mime_type: &str, compression_level: u32) -> Result<Self, Box<dyn Error>> {
+    fn new(mime_type: &str, compression_level: u32) -> Result<Self> {
         match mime_type {
             "application/gzip" => {
                 let result = GzEncoder::new(Vec::new(), flate2::Compression::new(compression_level));
@@ -92,7 +92,7 @@ impl TarEncoder {
                 let result = BufWriter::new(Vec::new());
                 Ok(TarEncoder::XTar(result))
             }
-            _ => Err("Unsupported Encoding Format: The provided MIME type does not correspond to a supported encoding format.".to_string().into()),
+            _ => Err(anyhow!("Unsupported Encoding Format: The provided MIME type does not correspond to a supported encoding format.")),
         }
     }
 
@@ -106,10 +106,7 @@ impl TarEncoder {
     }
 }
 
-fn create_tar_decoder<'a>(
-    reader: &'a [u8],
-    mime_type: &str,
-) -> Result<Box<dyn Read + 'a>, Box<dyn Error>> {
+fn create_tar_decoder<'a>(reader: &'a [u8], mime_type: &str) -> Result<Box<dyn Read + 'a>> {
     match mime_type {
         "application/gzip" => {
             Ok(Box::new(GzDecoder::new(reader)))
@@ -123,14 +120,11 @@ fn create_tar_decoder<'a>(
         "application/x-tar" => {
             Ok(Box::new(BufReader::new(reader)))
         }
-        _ => Err("Unsupported Decoding Format: The provided MIME type does not correspond to a supported decoding format.")?,
+        _ => Err(anyhow!("Unsupported Decoding Format: The provided MIME type does not correspond to a supported decoding format."))?,
     }
 }
 
-fn retain_inner_vec(
-    input: &mut Vec<PathBuf>,
-    filter: &str,
-) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+fn retain_inner_vec(input: &mut Vec<PathBuf>, filter: &str) -> Result<Vec<PathBuf>> {
     let mut inner_list = Vec::new();
     input.retain_mut(|e| {
         if e.starts_with(filter) {
@@ -150,7 +144,7 @@ fn zip_handle_inner_archive(
     path: &str,
     options: FileOptions,
     zip_writer: &mut zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<()> {
     let result = pack_archive(progress_bar, entry_bytes, filter_list, compression_level)?;
     zip_writer.start_file(path, options)?;
     zip_writer.write_all(&result)?;
@@ -164,7 +158,7 @@ fn process_zip_entry(
     filter_list: &mut Vec<PathBuf>,
     progress_bar: &ProgressBar,
     compression_level: u32,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<()> {
     let path = entry.name().to_owned();
     let options = FileOptions::default()
         .compression_level(Some(compression_level.try_into()?))
@@ -211,7 +205,7 @@ fn encode_zip(
     input_bytes: Vec<u8>,
     filter_list: &mut Vec<PathBuf>,
     compression_level: u32,
-) -> Result<Vec<u8>, Box<dyn Error>> {
+) -> Result<Vec<u8>> {
     let decoder = std::io::Cursor::new(input_bytes);
 
     let mut zip_entries = zip::ZipArchive::new(decoder).unwrap();
@@ -241,7 +235,7 @@ fn tar_handle_inner_archive(
     filter_list: &mut Vec<PathBuf>,
     path: &str,
     compression_level: u32,
-) -> Result<(Vec<u8>, bool), Box<dyn Error>> {
+) -> Result<(Vec<u8>, bool)> {
     if infer::is_archive(&input_bytes) {
         progress_bar.set_message(format!("inner archive: {}", path));
         let mut inner_filter_list = retain_inner_vec(filter_list, path)?;
@@ -264,7 +258,7 @@ fn encode_tar(
     filter_list: &mut Vec<PathBuf>,
     compression_level: u32,
     mime_type: &str,
-) -> Result<Vec<u8>, Box<dyn Error>> {
+) -> Result<Vec<u8>> {
     let decoder = create_tar_decoder(&input_bytes, mime_type)?;
     let mut tar_archive = tar::Archive::new(decoder);
 

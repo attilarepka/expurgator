@@ -1,24 +1,20 @@
 use std::{
-    error::Error,
     fs::{create_dir_all, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
 };
 
+use anyhow::{anyhow, Result};
 use csv::ReaderBuilder;
 use indicatif::ProgressBar;
 use inquire::Confirm;
 
-pub fn to_bytes(file_path: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+pub fn to_bytes(file_path: &str) -> Result<Vec<u8>> {
     let bytes = std::fs::read(file_path)?;
     Ok(bytes)
 }
 
-pub fn parse_csv(
-    file_path: &str,
-    index: usize,
-    header: bool,
-) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+pub fn parse_csv(file_path: &str, index: usize, header: bool) -> Result<Vec<PathBuf>> {
     let mut reader = ReaderBuilder::new()
         .has_headers(header)
         .from_path(file_path)?;
@@ -28,7 +24,7 @@ pub fn parse_csv(
         if let Some(field) = record?.get(index - 1) {
             result.push(field.into());
         } else {
-            Err(format!(
+            Err(anyhow!(
                 "Index Not Found: The expected index '{}' was not found.",
                 index
             ))?;
@@ -38,14 +34,16 @@ pub fn parse_csv(
     Ok(result)
 }
 
-pub fn parse_compression(compression_level: u32) -> Result<u32, Box<dyn Error>> {
+pub fn parse_compression(compression_level: u32) -> Result<u32> {
     match compression_level {
         0..=9 => Ok(compression_level),
-        _ => Err("Invalid Compression Level: Please choose a compression between 0 and 9.")?,
+        _ => Err(anyhow!(
+            "Invalid Compression Level: Please choose a compression between 0 and 9."
+        ))?,
     }
 }
 
-pub fn prompt_csv(result: &[PathBuf]) -> Result<(), Box<dyn Error>> {
+pub fn prompt_csv(result: &[PathBuf]) -> Result<()> {
     let ans = Confirm::new("Is this correct?")
         .with_default(false)
         .with_help_message(
@@ -60,12 +58,12 @@ pub fn prompt_csv(result: &[PathBuf]) -> Result<(), Box<dyn Error>> {
 
     match ans {
         Ok(true) => Ok(()),
-        Ok(false) => Err("Stopped by SIGNAL. Exiting..")?,
+        Ok(false) => Err(anyhow!("Stopped by SIGNAL. Exiting.."))?,
         Err(err) => Err(err)?,
     }
 }
 
-pub fn prompt_error(progress_bar: &ProgressBar) -> Result<(), Box<dyn Error>> {
+pub fn prompt_error(progress_bar: &ProgressBar) -> Result<()> {
     let mut ans = Ok(false);
     progress_bar.suspend(|| {
         ans = Confirm::new("Do you want to continue?")
@@ -75,20 +73,22 @@ pub fn prompt_error(progress_bar: &ProgressBar) -> Result<(), Box<dyn Error>> {
     });
     match ans {
         Ok(true) => Ok(()),
-        Ok(false) => Err("User interrupted, exiting")?,
+        Ok(false) => Err(anyhow!("User interrupted, exiting"))?,
         Err(err) => Err(err)?,
     }
 }
 
-pub fn infer_input_file(file_bytes: &[u8]) -> Result<String, Box<dyn Error>> {
+pub fn infer_input_file(file_bytes: &[u8]) -> Result<String> {
     if infer::is_archive(file_bytes) {
         let kind = infer::get(file_bytes);
         return Ok(kind.unwrap().mime_type().to_string());
     }
-    Err("Unsupported File Type: Only archive file types are supported.")?
+    Err(anyhow!(
+        "Unsupported File Type: Only archive file types are supported."
+    ))?
 }
 
-pub fn to_file(dst: &str, payload: Vec<u8>) -> Result<(), Box<dyn Error>> {
+pub fn to_file(dst: &str, payload: Vec<u8>) -> Result<()> {
     let mut out = String::from("out/");
     if !Path::new(out.as_str()).exists() {
         create_dir_all(out.as_str())?;
