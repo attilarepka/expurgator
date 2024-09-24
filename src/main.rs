@@ -2,18 +2,14 @@ mod archive;
 mod cli;
 mod util;
 
+use anyhow::Result;
 use archive::pack_archive;
 use indicatif::ProgressBar;
 use indicatif::ProgressStyle;
-use std::error::Error;
 use std::time::Duration;
-use util::parse_compression;
-use util::parse_csv;
-use util::prompt_csv;
-use util::to_bytes;
-use util::to_file;
+use util::{parse_compression, parse_csv, prompt_csv, to_bytes, to_file};
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> Result<()> {
     let args = cli::Args::from();
 
     let compression_level = parse_compression(args.compression)?;
