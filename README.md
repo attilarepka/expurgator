@@ -21,8 +21,8 @@ then expurgator can be installed using a binary `.deb` file provided in each
 [expurgator release](https://github.com/attilarepka/expurgator/releases).
 
 ```
-$ curl -LO https://github.com/attilarepka/expurgator/releases/download/0.1.2/expurgator_0.1.2_amd64.deb
-$ sudo dpkg -i expurgator_0.1.2_amd64.deb
+$ curl -LO https://github.com/attilarepka/expurgator/releases/download/0.1.3/expurgator_0.1.3_amd64.deb
+$ sudo dpkg -i expurgator_0.1.3_amd64.deb
 ```
 
 ### Building
@@ -42,20 +42,20 @@ $ cargo build --release
 Expurgator provides a command-line interface with the following options:
 
 ```shell
-Usage: expurgator [OPTIONS] --input-file <INPUT_FILE> --csv-file <CSV_FILE> --csv-index <CSV_INDEX>
+Usage: expurgator [OPTIONS] --input <INPUT> --csv <CSV> --index <INDEX>
 
 Options:
-  -i, --input-file <INPUT_FILE>
+  -i, --input <INPUT>
       Specify the input archive file.
-  --csv-file <CSV_FILE>
+  --csv <CSV>
       Specify the CSV file containing the list of files to be removed.
-  --csv-index <CSV_INDEX>
+  --index <INDEX>
       Index of the field in the CSV containing the list of files to be removed.
-  --has-header
+  --with-headers
       Specify this flag if the CSV contains a header record [default: false].
-  -o, --output-file <OUTPUT_FILE>
+  -o, --output <OUTPUT>
       Specify the output file [default: --input-file].
-  --compression-level <COMPRESSION_LEVEL>
+  --compression <COMPRESSION>
       Set the compression level [default: 6].
   -h, --help
       Print help.
