@@ -9,7 +9,7 @@ use bzip2::{read::BzDecoder, write::BzEncoder};
 use flate2::{read::GzDecoder, write::GzEncoder};
 use indicatif::ProgressBar;
 use xz2::{read::XzDecoder, write::XzEncoder};
-use zip::write::FileOptions;
+use zip::write::SimpleFileOptions;
 
 use crate::util::{infer_input_file, prompt_error};
 
@@ -142,7 +142,7 @@ fn zip_handle_inner_archive(
     filter_list: &mut Vec<PathBuf>,
     compression_level: u32,
     path: &str,
-    options: FileOptions,
+    options: SimpleFileOptions,
     zip_writer: &mut zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>>,
 ) -> Result<()> {
     let result = pack_archive(progress_bar, entry_bytes, filter_list, compression_level)?;
@@ -160,8 +160,8 @@ fn process_zip_entry(
     compression_level: u32,
 ) -> Result<()> {
     let path = entry.name().to_owned();
-    let options = FileOptions::default()
-        .compression_level(Some(compression_level.try_into()?))
+    let options = SimpleFileOptions::default()
+        .compression_level(Some(compression_level.into()))
         .compression_method(entry.compression())
         .unix_permissions(entry.unix_mode().unwrap_or(0o777));
 
