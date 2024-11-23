@@ -13,7 +13,7 @@ revision = ""
 
 [dependencies]
 inquire = "0.7.5"
-indicatif = "0.17.5"
+indicatif = "0.17.9"
 xz2 = "0.1"
 # tar = "0.4" # TODO: revert if https://github.com/alexcrichton/tar-rs/pull/321 merged
 tar = { git = "https://github.com/attilarepka/tar-rs" }
