@@ -19,7 +19,7 @@ xz2 = "0.1"
 tar = { git = "https://github.com/attilarepka/tar-rs" }
 zip = "2.0.0"
 flate2 = "1.0"
-bzip2 = "0.4"
+bzip2 = "0.5"
 infer = "0.16"
 clap = { version = "4.5.23", features = ["derive"] }
 csv = "1.3"
