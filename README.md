@@ -1,6 +1,6 @@
 # expurgator
 
-expurgator is a cli utility for efficiently purging unwanted files from archive formats.
+expurgator is a CLI utility for removing files from archive formats based on a CSV file.
 
 [![Build status](https://github.com/attilarepka/expurgator/actions/workflows/tests.yml/badge.svg)](https://github.com/attilarepka/expurgator/actions)
 
@@ -21,8 +21,8 @@ then expurgator can be installed using a binary `.deb` file provided in each
 [expurgator release](https://github.com/attilarepka/expurgator/releases).
 
 ```
-$ curl -LO https://github.com/attilarepka/expurgator/releases/download/0.1.3/expurgator_0.1.3_amd64.deb
-$ sudo dpkg -i expurgator_0.1.3_amd64.deb
+$ curl -LO https://github.com/attilarepka/expurgator/releases/download/0.1.4/expurgator_0.1.4_amd64.deb
+$ sudo dpkg -i expurgator_0.1.4_amd64.deb
 ```
 
 ### Building
