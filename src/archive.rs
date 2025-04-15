@@ -15,18 +15,18 @@ use crate::util::{infer_input_file, prompt_error};
 
 pub fn pack_archive(
     progress_bar: &ProgressBar,
-    input_bytes: Vec<u8>,
-    filter_list: &mut Vec<PathBuf>,
+    input: Vec<u8>,
+    excluded_paths: &mut Vec<PathBuf>,
     compression_level: u32,
 ) -> Result<Vec<u8>> {
-    let mime_type = infer_input_file(&input_bytes)?;
+    let mime_type = infer_input_file(&input)?;
     match mime_type.as_str() {
-        "application/zip" => encode_zip(progress_bar, input_bytes, filter_list, compression_level),
+        "application/zip" => encode_zip(progress_bar, input, excluded_paths, compression_level),
         "application/gzip" | "application/x-bzip2" | "application/x-xz" | "application/x-tar" => {
             encode_tar(
                 progress_bar,
-                input_bytes,
-                filter_list,
+                input,
+                excluded_paths,
                 compression_level,
                 mime_type.as_str(),
             )
@@ -139,13 +139,13 @@ fn retain_inner_vec(input: &mut Vec<PathBuf>, filter: &str) -> Result<Vec<PathBu
 fn zip_handle_inner_archive(
     progress_bar: &ProgressBar,
     entry_bytes: Vec<u8>,
-    filter_list: &mut Vec<PathBuf>,
+    excluded_paths: &mut Vec<PathBuf>,
     compression_level: u32,
     path: &str,
     options: SimpleFileOptions,
     zip_writer: &mut zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>>,
 ) -> Result<()> {
-    let result = pack_archive(progress_bar, entry_bytes, filter_list, compression_level)?;
+    let result = pack_archive(progress_bar, entry_bytes, excluded_paths, compression_level)?;
     zip_writer.start_file(path, options)?;
     zip_writer.write_all(&result)?;
 
@@ -153,9 +153,9 @@ fn zip_handle_inner_archive(
 }
 
 fn process_zip_entry(
-    entry: &mut zip::read::ZipFile,
+    entry: &mut zip::read::ZipFile<std::io::Cursor<Vec<u8>>>,
     zip_writer: &mut zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>>,
-    filter_list: &mut Vec<PathBuf>,
+    excluded_paths: &mut Vec<PathBuf>,
     progress_bar: &ProgressBar,
     compression_level: u32,
 ) -> Result<()> {
@@ -167,8 +167,8 @@ fn process_zip_entry(
 
     progress_bar.set_message(format!("processing: {}", path));
 
-    if let Some(found_file) = filter_list.iter().position(|e| e.ends_with(&path)) {
-        filter_list.swap_remove(found_file);
+    if let Some(found_file) = excluded_paths.iter().position(|e| e.ends_with(&path)) {
+        excluded_paths.swap_remove(found_file);
     } else {
         if entry.is_dir() {
             zip_writer.add_directory(&path, options)?;
@@ -179,12 +179,12 @@ fn process_zip_entry(
 
             if infer::is_archive(&entry_bytes) {
                 progress_bar.set_message(format!("inner archive: {}", &path));
-                let mut inner_filter_list = retain_inner_vec(filter_list, &path)?;
-                if !inner_filter_list.is_empty() {
+                let mut excluded_paths = retain_inner_vec(excluded_paths, &path)?;
+                if !excluded_paths.is_empty() {
                     zip_handle_inner_archive(
                         progress_bar,
                         entry_bytes,
-                        &mut inner_filter_list,
+                        &mut excluded_paths,
                         compression_level,
                         path.as_str(),
                         options,
@@ -202,11 +202,11 @@ fn process_zip_entry(
 
 fn encode_zip(
     progress_bar: &ProgressBar,
-    input_bytes: Vec<u8>,
-    filter_list: &mut Vec<PathBuf>,
+    input: Vec<u8>,
+    excluded_paths: &mut Vec<PathBuf>,
     compression_level: u32,
 ) -> Result<Vec<u8>> {
-    let decoder = std::io::Cursor::new(input_bytes);
+    let decoder = std::io::Cursor::new(input);
 
     let mut zip_entries = zip::ZipArchive::new(decoder).unwrap();
     let mut result: Vec<u8> = Vec::new();
@@ -219,7 +219,7 @@ fn encode_zip(
             process_zip_entry(
                 &mut entry,
                 &mut zip,
-                filter_list,
+                excluded_paths,
                 progress_bar,
                 compression_level,
             )?;
@@ -231,35 +231,30 @@ fn encode_zip(
 
 fn tar_handle_inner_archive(
     progress_bar: &ProgressBar,
-    input_bytes: Vec<u8>,
-    filter_list: &mut Vec<PathBuf>,
+    input: Vec<u8>,
+    excluded_paths: &mut Vec<PathBuf>,
     path: &str,
     compression_level: u32,
 ) -> Result<(Vec<u8>, bool)> {
-    if infer::is_archive(&input_bytes) {
+    if infer::is_archive(&input) {
         progress_bar.set_message(format!("inner archive: {}", path));
-        let mut inner_filter_list = retain_inner_vec(filter_list, path)?;
-        if !inner_filter_list.is_empty() {
-            let inner_entry_bytes = pack_archive(
-                progress_bar,
-                input_bytes,
-                &mut inner_filter_list,
-                compression_level,
-            )?;
-            return Ok((inner_entry_bytes, true));
+        let mut excluded_paths = retain_inner_vec(excluded_paths, path)?;
+        if !excluded_paths.is_empty() {
+            let result = pack_archive(progress_bar, input, &mut excluded_paths, compression_level)?;
+            return Ok((result, true));
         }
     }
-    Ok((input_bytes, false))
+    Ok((input, false))
 }
 
 fn encode_tar(
     progress_bar: &ProgressBar,
-    input_bytes: Vec<u8>,
-    filter_list: &mut Vec<PathBuf>,
+    input: Vec<u8>,
+    excluded_paths: &mut Vec<PathBuf>,
     compression_level: u32,
     mime_type: &str,
 ) -> Result<Vec<u8>> {
-    let decoder = create_tar_decoder(&input_bytes, mime_type)?;
+    let decoder = create_tar_decoder(&input, mime_type)?;
     let mut tar_archive = tar::Archive::new(decoder);
 
     let tar_encoder = TarEncoder::new(mime_type, compression_level).unwrap();
@@ -272,8 +267,8 @@ fn encode_tar(
                 let path = path.to_string_lossy().to_string();
                 progress_bar.set_message(format!("processing: {}", path));
 
-                if let Some(found_file) = filter_list.iter().position(|e| e.ends_with(&path)) {
-                    filter_list.swap_remove(found_file);
+                if let Some(found_file) = excluded_paths.iter().position(|e| e.ends_with(&path)) {
+                    excluded_paths.swap_remove(found_file);
                 } else {
                     match entry.header().entry_type() {
                         tar::EntryType::Directory => {
@@ -299,7 +294,7 @@ fn encode_tar(
                             let (inner_entry, is_archive) = tar_handle_inner_archive(
                                 progress_bar,
                                 inner_entry,
-                                filter_list,
+                                excluded_paths,
                                 &path,
                                 compression_level,
                             )?;

@@ -9,7 +9,7 @@ use csv::ReaderBuilder;
 use indicatif::ProgressBar;
 use inquire::Confirm;
 
-pub fn to_bytes(file_path: &str) -> Result<Vec<u8>> {
+pub fn file_to_bytes(file_path: &str) -> Result<Vec<u8>> {
     let bytes = std::fs::read(file_path)?;
     Ok(bytes)
 }
@@ -150,10 +150,10 @@ mod tests {
         file.write_str(payload).unwrap();
 
         assert_eq!(
-            to_bytes(file.path().to_str().unwrap()).unwrap(),
+            file_to_bytes(file.path().to_str().unwrap()).unwrap(),
             payload.as_bytes()
         );
 
-        assert!(to_bytes("nonexistent_file").is_err());
+        assert!(file_to_bytes("nonexistent_file").is_err());
     }
 }
