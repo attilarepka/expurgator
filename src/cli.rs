@@ -1,22 +1,22 @@
 use clap::{ArgAction, Parser};
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "expurgator", long_about = None)]
+#[command(author, version, about = None, long_about = None)]
 pub struct Args {
     /// Input archive file
-    #[arg(long, short)]
+    #[arg(index = 1)]
     pub input: String,
 
-    /// CSV file containing the list of files to be removed
-    #[arg(long)]
-    pub csv: String,
+    /// CSV file specifying which files or paths should be removed from the input archive
+    #[arg(index = 2)]
+    pub filter: String,
 
-    /// Index of the field in CSV containing the list of files to be removed
-    #[arg(long)]
+    /// Index of the CSV column specifying which files or paths should be removed from the input archive
+    #[arg(long, short)]
     pub index: usize,
 
     /// Specify this flag if the CSV contains a header record [default: false]
-    #[arg(long, action=ArgAction::SetFalse)]
+    #[arg(long, short, action=ArgAction::SetFalse)]
     pub with_headers: bool,
 
     /// Output file [default: --input]
@@ -24,7 +24,7 @@ pub struct Args {
     pub output: Option<String>,
 
     /// Compression level
-    #[arg(long, default_value_t = 6)]
+    #[arg(long, short, default_value_t = 6)]
     pub compression: u32,
 }
 

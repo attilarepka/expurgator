@@ -21,8 +21,8 @@ then expurgator can be installed using a binary `.deb` file provided in each
 [expurgator release](https://github.com/attilarepka/expurgator/releases).
 
 ```
-$ curl -LO https://github.com/attilarepka/expurgator/releases/download/0.1.4/expurgator_0.1.4_amd64.deb
-$ sudo dpkg -i expurgator_0.1.4_amd64.deb
+$ curl -LO https://github.com/attilarepka/expurgator/releases/download/0.1.5/expurgator_0.1.5_amd64.deb
+$ sudo dpkg -i expurgator_0.1.5_amd64.deb
 ```
 
 ### Building
@@ -42,25 +42,19 @@ $ cargo build --release
 Expurgator provides a command-line interface with the following options:
 
 ```shell
-Usage: expurgator [OPTIONS] --input <INPUT> --csv <CSV> --index <INDEX>
+Usage: expurgator [OPTIONS] --index <INDEX> <INPUT> <FILTER>
+
+Arguments:
+  <INPUT>   Input archive file
+  <FILTER>  CSV file specifying which files or paths should be removed from the input archive
 
 Options:
-  -i, --input <INPUT>
-      Specify the input archive file.
-  --csv <CSV>
-      Specify the CSV file containing the list of files to be removed.
-  --index <INDEX>
-      Index of the field in the CSV containing the list of files to be removed.
-  --with-headers
-      Specify this flag if the CSV contains a header record [default: false].
-  -o, --output <OUTPUT>
-      Specify the output file [default: --input-file].
-  --compression <COMPRESSION>
-      Set the compression level [default: 6].
-  -h, --help
-      Print help.
-  -V, --version
-      Print version.
+  -i, --index <INDEX>              Index of the CSV column specifying which files or paths should be removed from the input archive
+  -w, --with-headers               Specify this flag if the CSV contains a header record [default: false]
+  -o, --output <OUTPUT>            Output file [default: --input]
+  -c, --compression <COMPRESSION>  Compression level [default: 6]
+  -h, --help                       Print help
+  -V, --version                    Print version
 ```
 
 ## Contributing
