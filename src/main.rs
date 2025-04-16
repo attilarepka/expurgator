@@ -16,7 +16,7 @@ fn main() -> Result<()> {
 
     let input = file_to_bytes(&args.input)?;
 
-    let mut excluded_paths = parse_csv(&args.csv, args.index, args.with_headers)?;
+    let mut excluded_paths = parse_csv(&args.filter, args.index, args.with_headers)?;
     prompt_csv(&excluded_paths)?;
 
     let progress_bar = ProgressBar::new_spinner();

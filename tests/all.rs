@@ -18,7 +18,7 @@ fn test_argument_version() -> Result<(), Box<dyn std::error::Error>> {
     cmd.arg("--version");
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("0.1.4"));
+        .stdout(predicate::str::contains("0.1.5"));
 
     Ok(())
 }
@@ -32,8 +32,8 @@ fn test_argument_missing_mandatory() -> Result<(), Box<dyn std::error::Error>> {
         .stderr(predicate::str::contains(
             "error: the following required arguments were not provided:",
         ))
-        .stderr(predicate::str::contains("--input <INPUT>"))
-        .stderr(predicate::str::contains("--csv <CSV>"))
+        .stderr(predicate::str::contains("<INPUT>"))
+        .stderr(predicate::str::contains("<FILTER>"))
         .stderr(predicate::str::contains("--index <INDEX>"));
 
     Ok(())
