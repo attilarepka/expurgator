@@ -88,7 +88,7 @@ pub fn infer_input_file(file_bytes: &[u8]) -> Result<String> {
     ))?
 }
 
-pub fn to_file(dst: &str, payload: Vec<u8>) -> Result<()> {
+pub fn to_file(dst: &str, payload: &[u8]) -> Result<()> {
     let mut out = String::from("out/");
     if !Path::new(out.as_str()).exists() {
         create_dir_all(out.as_str())?;
@@ -101,7 +101,7 @@ pub fn to_file(dst: &str, payload: Vec<u8>) -> Result<()> {
         .truncate(true)
         .open(out)?;
 
-    file.write_all(&payload)?;
+    file.write_all(payload)?;
 
     Ok(())
 }

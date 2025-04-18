@@ -25,7 +25,7 @@ pub fn pack_archive(
         "application/gzip" | "application/x-bzip2" | "application/x-xz" | "application/x-tar" => {
             encode_tar(
                 progress_bar,
-                input,
+                &input,
                 excluded_paths,
                 compression_level,
                 mime_type.as_str(),
@@ -124,7 +124,7 @@ fn create_tar_decoder<'a>(reader: &'a [u8], mime_type: &str) -> Result<Box<dyn R
     }
 }
 
-fn retain_inner_vec(input: &mut Vec<PathBuf>, filter: &str) -> Result<Vec<PathBuf>> {
+fn retain_inner_vec(input: &mut Vec<PathBuf>, filter: &str) -> Vec<PathBuf> {
     let mut inner_list = Vec::new();
     input.retain_mut(|e| {
         if e.starts_with(filter) {
@@ -133,7 +133,7 @@ fn retain_inner_vec(input: &mut Vec<PathBuf>, filter: &str) -> Result<Vec<PathBu
         }
         true
     });
-    Ok(inner_list)
+    inner_list
 }
 
 fn zip_handle_inner_archive(
@@ -165,7 +165,7 @@ fn process_zip_entry(
         .compression_method(entry.compression())
         .unix_permissions(entry.unix_mode().unwrap_or(0o777));
 
-    progress_bar.set_message(format!("processing: {}", path));
+    progress_bar.set_message(format!("processing: {path}"));
 
     if let Some(found_file) = excluded_paths.iter().position(|e| e.ends_with(&path)) {
         excluded_paths.swap_remove(found_file);
@@ -179,7 +179,7 @@ fn process_zip_entry(
 
             if infer::is_archive(&entry_bytes) {
                 progress_bar.set_message(format!("inner archive: {}", &path));
-                let mut excluded_paths = retain_inner_vec(excluded_paths, &path)?;
+                let mut excluded_paths = retain_inner_vec(excluded_paths, &path);
                 if !excluded_paths.is_empty() {
                     zip_handle_inner_archive(
                         progress_bar,
@@ -237,8 +237,8 @@ fn tar_handle_inner_archive(
     compression_level: u32,
 ) -> Result<(Vec<u8>, bool)> {
     if infer::is_archive(&input) {
-        progress_bar.set_message(format!("inner archive: {}", path));
-        let mut excluded_paths = retain_inner_vec(excluded_paths, path)?;
+        progress_bar.set_message(format!("inner archive: {path}"));
+        let mut excluded_paths = retain_inner_vec(excluded_paths, path);
         if !excluded_paths.is_empty() {
             let result = pack_archive(progress_bar, input, &mut excluded_paths, compression_level)?;
             return Ok((result, true));
@@ -249,12 +249,12 @@ fn tar_handle_inner_archive(
 
 fn encode_tar(
     progress_bar: &ProgressBar,
-    input: Vec<u8>,
+    input: &[u8],
     excluded_paths: &mut Vec<PathBuf>,
     compression_level: u32,
     mime_type: &str,
 ) -> Result<Vec<u8>> {
-    let decoder = create_tar_decoder(&input, mime_type)?;
+    let decoder = create_tar_decoder(input, mime_type)?;
     let mut tar_archive = tar::Archive::new(decoder);
 
     let tar_encoder = TarEncoder::new(mime_type, compression_level).unwrap();
@@ -265,14 +265,14 @@ fn encode_tar(
             Ok(mut entry) => {
                 let path = (*entry.path()?).to_owned();
                 let path = path.to_string_lossy().to_string();
-                progress_bar.set_message(format!("processing: {}", path));
+                progress_bar.set_message(format!("processing: {path}"));
 
                 if let Some(found_file) = excluded_paths.iter().position(|e| e.ends_with(&path)) {
                     excluded_paths.swap_remove(found_file);
                 } else {
                     match entry.header().entry_type() {
                         tar::EntryType::Directory => {
-                            progress_bar.set_message(format!("adding directory: {}", path));
+                            progress_bar.set_message(format!("adding directory: {path}"));
                             tar_writer.append_dir(&path, ".")?;
                         }
                         tar::EntryType::Regular
@@ -284,7 +284,7 @@ fn encode_tar(
                         | tar::EntryType::GNULongName
                         | tar::EntryType::XGlobalHeader
                         | tar::EntryType::XHeader => {
-                            progress_bar.set_message(format!("adding file: {}", path));
+                            progress_bar.set_message(format!("adding file: {path}"));
 
                             // read exactly the size of the current entry
                             let mut inner_entry =
@@ -307,7 +307,7 @@ fn encode_tar(
                         tar::EntryType::Symlink
                         | tar::EntryType::Link
                         | tar::EntryType::GNULongLink => {
-                            progress_bar.set_message(format!("adding link: {}", path));
+                            progress_bar.set_message(format!("adding link: {path}"));
                             tar_writer.append_link(
                                 entry.header().clone().borrow_mut(),
                                 &path,
@@ -317,7 +317,7 @@ fn encode_tar(
                                     .unwrap_or(entry.header().path()?),
                             )?;
                         }
-                        _ => progress_bar.set_message(format!("unhandled type: {}", path)),
+                        _ => progress_bar.set_message(format!("unhandled type: {path}")),
                     }
                 }
             }
@@ -356,13 +356,14 @@ mod tests {
 
     #[test]
     fn test_retain_inner_vec() {
-        let mut input = Vec::new();
-        input.push(PathBuf::from("1/2"));
-        input.push(PathBuf::from("2/2"));
-        input.push(PathBuf::from("3/3"));
-        input.push(PathBuf::from("3/4"));
+        let mut input = vec![
+            PathBuf::from("1/2"),
+            PathBuf::from("2/2"),
+            PathBuf::from("3/3"),
+            PathBuf::from("3/4"),
+        ];
 
-        let output = retain_inner_vec(&mut input, "3").unwrap();
+        let output = retain_inner_vec(&mut input, "3");
 
         assert_eq!(input.len(), 2);
         assert_eq!(input[0].to_str().unwrap(), "1/2");

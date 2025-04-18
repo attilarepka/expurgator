@@ -37,7 +37,7 @@ fn main() -> Result<()> {
 
     let result = pack_archive(&progress_bar, input, &mut excluded_paths, compression_level)?;
 
-    to_file(args.output.unwrap().as_str(), result)?;
+    to_file(args.output.unwrap().as_str(), &result)?;
 
     Ok(())
 }
