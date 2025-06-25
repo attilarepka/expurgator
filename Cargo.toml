@@ -18,7 +18,7 @@ xz2 = "0.1"
 tar = "0.4"
 zip = "3.0.0"
 flate2 = "1.1"
-bzip2 = "0.5"
+bzip2 = "0.6"
 infer = "0.19"
 clap = { version = "4.5.40", features = ["derive"] }
 csv = "1.3"
