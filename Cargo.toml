@@ -13,7 +13,7 @@ revision = ""
 
 [dependencies]
 inquire = "0.7.5"
-indicatif = "0.17.11"
+indicatif = "0.18.0"
 xz2 = "0.1"
 tar = "0.4"
 zip = "3.0.0"
