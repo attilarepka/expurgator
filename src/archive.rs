@@ -66,61 +66,23 @@ impl WriteEncoder for BufWriter<Vec<u8>> {
     }
 }
 
-enum TarEncoder {
-    Gzip(GzEncoder<Vec<u8>>),
-    Bzip2(BzEncoder<Vec<u8>>),
-    Xz2(XzEncoder<Vec<u8>>),
-    XTar(BufWriter<Vec<u8>>),
-}
-
-impl TarEncoder {
-    fn new(mime_type: &str, compression_level: u32) -> Result<Self> {
-        match mime_type {
-            "application/gzip" => {
-                let result = GzEncoder::new(Vec::new(), flate2::Compression::new(compression_level));
-                Ok(TarEncoder::Gzip(result))
-            }
-            "application/x-bzip2" => {
-                let reuslt = BzEncoder::new(Vec::new(), bzip2::Compression::new(compression_level));
-                Ok(TarEncoder::Bzip2(reuslt))
-            }
-            "application/x-xz" => {
-                let result = XzEncoder::new(Vec::new(), compression_level);
-                Ok(TarEncoder::Xz2(result))
-            }
-            "application/x-tar" => {
-                let result = BufWriter::new(Vec::new());
-                Ok(TarEncoder::XTar(result))
-            }
-            _ => Err(anyhow!("Unsupported Encoding Format: The provided MIME type does not correspond to a supported encoding format.")),
-        }
-    }
-
-    fn encoder(self) -> Box<dyn WriteEncoder> {
-        match self {
-            TarEncoder::Gzip(result) => Box::new(result),
-            TarEncoder::Bzip2(result) => Box::new(result),
-            TarEncoder::Xz2(result) => Box::new(result),
-            TarEncoder::XTar(result) => Box::new(result),
-        }
-    }
-}
-
-fn create_tar_decoder<'a>(reader: &'a [u8], mime_type: &str) -> Result<Box<dyn Read + 'a>> {
+fn new_tar_encoder(mime_type: &str, compression_level: u32) -> Result<Box<dyn WriteEncoder>> {
     match mime_type {
-        "application/gzip" => {
-            Ok(Box::new(GzDecoder::new(reader)))
-        }
-        "application/x-bzip2" => {
-            Ok(Box::new(BzDecoder::new(reader)))
-        }
-        "application/x-xz" => {
-            Ok(Box::new(XzDecoder::new(reader)))
-        }
-        "application/x-tar" => {
-            Ok(Box::new(BufReader::new(reader)))
-        }
-        _ => Err(anyhow!("Unsupported Decoding Format: The provided MIME type does not correspond to a supported decoding format."))?,
+        "application/gzip" => Ok(Box::new(GzEncoder::new(Vec::new(), flate2::Compression::new(compression_level)))),
+        "application/x-bzip2" => Ok(Box::new(BzEncoder::new(Vec::new(), bzip2::Compression::new(compression_level)))),
+        "application/x-xz" => Ok(Box::new(XzEncoder::new(Vec::new(), compression_level))),
+        "application/x-tar" => Ok(Box::new(BufWriter::new(Vec::new()))),
+        _ => Err(anyhow!("Unsupported Encoding Format: The provided MIME type does not correspond to a supported encoding format.")),
+    }
+}
+
+fn new_tar_decoder<'a>(reader: &'a [u8], mime_type: &str) -> Result<Box<dyn Read + 'a>> {
+    match mime_type {
+        "application/gzip" => Ok(Box::new(GzDecoder::new(reader))),
+        "application/x-bzip2" => Ok(Box::new(BzDecoder::new(reader))),
+        "application/x-xz" => Ok(Box::new(XzDecoder::new(reader))),
+        "application/x-tar" => Ok(Box::new(BufReader::new(reader))),
+        _ => Err(anyhow!("Unsupported Decoding Format: The provided MIME type does not correspond to a supported decoding format.")),
     }
 }
 
@@ -254,11 +216,10 @@ fn encode_tar(
     compression_level: u32,
     mime_type: &str,
 ) -> Result<Vec<u8>> {
-    let decoder = create_tar_decoder(input, mime_type)?;
+    let decoder = new_tar_decoder(input, mime_type)?;
     let mut tar_archive = tar::Archive::new(decoder);
 
-    let tar_encoder = TarEncoder::new(mime_type, compression_level).unwrap();
-    let encoder = tar_encoder.encoder();
+    let encoder = new_tar_encoder(mime_type, compression_level)?;
     let mut tar_writer = tar::Builder::new(encoder);
     for entry in tar_archive.entries()? {
         match entry {
@@ -337,21 +298,21 @@ mod tests {
 
     #[test]
     fn test_create_tar_encoder() {
-        assert!(TarEncoder::new("application/gzip", 6).is_ok());
-        assert!(TarEncoder::new("application/x-bzip2", 6).is_ok());
-        assert!(TarEncoder::new("application/x-xz", 6).is_ok());
-        assert!(TarEncoder::new("application/x-tar", 6).is_ok());
-        assert!(TarEncoder::new("invalid", 6).is_err());
+        assert!(new_tar_encoder("application/gzip", 6).is_ok());
+        assert!(new_tar_encoder("application/x-bzip2", 6).is_ok());
+        assert!(new_tar_encoder("application/x-xz", 6).is_ok());
+        assert!(new_tar_encoder("application/x-tar", 6).is_ok());
+        assert!(new_tar_encoder("invalid", 6).is_err());
     }
 
     #[test]
     fn test_create_tar_decoder() {
         let input = Vec::new();
-        assert!(create_tar_decoder(&input, "application/gzip").is_ok());
-        assert!(create_tar_decoder(&input, "application/x-bzip2").is_ok());
-        assert!(create_tar_decoder(&input, "application/x-xz").is_ok());
-        assert!(create_tar_decoder(&input, "application/x-tar").is_ok());
-        assert!(create_tar_decoder(&input, "invalid").is_err());
+        assert!(new_tar_decoder(&input, "application/gzip").is_ok());
+        assert!(new_tar_decoder(&input, "application/x-bzip2").is_ok());
+        assert!(new_tar_decoder(&input, "application/x-xz").is_ok());
+        assert!(new_tar_decoder(&input, "application/x-tar").is_ok());
+        assert!(new_tar_decoder(&input, "invalid").is_err());
     }
 
     #[test]
