@@ -1220,6 +1220,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d9c75b47bdff86fa3334a3db91356b8d7d86a9b839dab7d0bdc5c3d3a077618"
 dependencies = [
  "deranged",
+ "js-sys",
  "num-conv",
  "powerfmt",
  "serde",
@@ -1231,6 +1232,12 @@ name = "time-core"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c9e9a38711f559d9e3ce1cdb06dd7c5b8ea546bc90052da6d06bb76da74bb07c"
+
+[[package]]
+name = "typed-path"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e43ffa54726cdc9ea78392023ffe9fe9cf9ac779e1c6fcb0d23f9862e3879d20"
 
 [[package]]
 name = "typenum"
@@ -1608,9 +1615,9 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "7.1.0"
+version = "7.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9013f1222db8a6d680f13a7ccdc60a781199cd09c2fa4eff58e728bb181757fc"
+checksum = "c42e33efc22a0650c311c2ef19115ce232583abbe80850bc8b66509ebef02de0"
 dependencies = [
  "aes",
  "bzip2",
@@ -1628,6 +1635,7 @@ dependencies = [
  "ppmd-rust",
  "sha1",
  "time",
+ "typed-path",
  "zeroize",
  "zopfli",
  "zstd",
