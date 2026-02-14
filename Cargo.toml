@@ -22,7 +22,7 @@ bzip2 = "0.6"
 infer = "0.19"
 clap = { version = "4.5.57", features = ["derive"] }
 csv = "1.4"
-anyhow = "1.0.100"
+anyhow = "1.0.101"
 
 [dev-dependencies]
 assert_cmd = "2.1.2"
