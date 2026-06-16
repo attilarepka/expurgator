@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs::{create_dir_all, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -14,15 +15,15 @@ pub fn file_to_bytes(file_path: &str) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-pub fn parse_csv(file_path: &str, index: usize, header: bool) -> Result<Vec<PathBuf>> {
+pub fn parse_csv(file_path: &str, index: usize, header: bool) -> Result<HashSet<PathBuf>> {
     let mut reader = ReaderBuilder::new()
         .has_headers(header)
         .from_path(file_path)?;
-    let mut result: Vec<PathBuf> = Vec::new();
+    let mut result: HashSet<PathBuf> = HashSet::new();
 
     for record in reader.records() {
         if let Some(field) = record?.get(index - 1) {
-            result.push(field.into());
+            result.insert(field.into());
         } else {
             Err(anyhow!(
                 "Index Not Found: The expected index '{}' was not found.",
@@ -43,14 +44,14 @@ pub fn parse_compression(compression_level: u32) -> Result<u32> {
     }
 }
 
-pub fn prompt_csv(result: &[PathBuf]) -> Result<()> {
+pub fn prompt_csv(result: &HashSet<PathBuf>) -> Result<()> {
     let ans = Confirm::new("Is this correct?")
         .with_default(false)
         .with_help_message(
             format!(
                 "File contains {} records, first value:\n{}",
                 result.len(),
-                result.first().unwrap().display(),
+                result.iter().next().unwrap().to_str().unwrap()
             )
             .as_str(),
         )
@@ -124,12 +125,12 @@ mod tests {
             .unwrap();
         let output = parse_csv(file.path().to_str().unwrap(), 3, false).unwrap();
         assert_eq!(output.len(), 2);
-        assert_eq!(output[0].to_str().unwrap(), "some/path");
-        assert_eq!(output[1].to_str().unwrap(), "some/other/path");
+        assert!(output.contains(&PathBuf::from("some/path")));
+        assert!(output.contains(&PathBuf::from("some/other/path")));
 
         let output = parse_csv(file.path().to_str().unwrap(), 3, true).unwrap();
         assert_eq!(output.len(), 1);
-        assert_eq!(output[0].to_str().unwrap(), "some/other/path");
+        assert!(output.contains(&PathBuf::from("some/other/path")));
 
         assert!(parse_csv(file.path().to_str().unwrap(), 5, false).is_err());
     }
