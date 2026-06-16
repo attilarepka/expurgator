@@ -1,5 +1,6 @@
 use std::{
     borrow::BorrowMut,
+    collections::HashSet,
     io::{BufReader, BufWriter, Read, Write},
     path::PathBuf,
 };
@@ -16,7 +17,7 @@ use crate::util::{infer_input_file, prompt_error};
 pub fn pack_archive(
     progress_bar: &ProgressBar,
     input: Vec<u8>,
-    excluded_paths: &mut Vec<PathBuf>,
+    excluded_paths: &mut HashSet<PathBuf>,
     compression_level: u32,
 ) -> Result<Vec<u8>> {
     let mime_type = infer_input_file(&input)?;
@@ -86,22 +87,23 @@ fn new_tar_decoder<'a>(reader: &'a [u8], mime_type: &str) -> Result<Box<dyn Read
     }
 }
 
-fn retain_inner_vec(input: &mut Vec<PathBuf>, filter: &str) -> Vec<PathBuf> {
-    let mut inner_list = Vec::new();
-    input.retain_mut(|e| {
-        if e.starts_with(filter) {
-            inner_list.push(std::mem::take(e));
-            return false;
-        }
+fn filter_paths(input: &mut HashSet<PathBuf>, filter: &str) -> HashSet<PathBuf> {
+    input.extract_if(|p| p.starts_with(filter)).collect()
+}
+
+fn remove_matching_excluded(excluded_paths: &mut HashSet<PathBuf>, path: &str) -> bool {
+    if let Some(match_path) = excluded_paths.iter().find(|p| p.ends_with(path)).cloned() {
+        excluded_paths.remove(&match_path);
         true
-    });
-    inner_list
+    } else {
+        false
+    }
 }
 
 fn zip_handle_inner_archive(
     progress_bar: &ProgressBar,
     entry_bytes: Vec<u8>,
-    excluded_paths: &mut Vec<PathBuf>,
+    excluded_paths: &mut HashSet<PathBuf>,
     compression_level: u32,
     path: &str,
     options: SimpleFileOptions,
@@ -117,21 +119,22 @@ fn zip_handle_inner_archive(
 fn process_zip_entry(
     entry: &mut zip::read::ZipFile<std::io::Cursor<Vec<u8>>>,
     zip_writer: &mut zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>>,
-    excluded_paths: &mut Vec<PathBuf>,
+    excluded_paths: &mut HashSet<PathBuf>,
     progress_bar: &ProgressBar,
     compression_level: u32,
 ) -> Result<()> {
     let path = entry.name().to_owned();
     let options = SimpleFileOptions::default()
-        .compression_level(Some(compression_level.into()))
+        .compression_level(match entry.compression() {
+            zip::CompressionMethod::Stored => None,
+            _ => Some(compression_level.into()),
+        })
         .compression_method(entry.compression())
         .unix_permissions(entry.unix_mode().unwrap_or(0o777));
 
     progress_bar.set_message(format!("processing: {path}"));
 
-    if let Some(found_file) = excluded_paths.iter().position(|e| e.ends_with(&path)) {
-        excluded_paths.swap_remove(found_file);
-    } else {
+    if !remove_matching_excluded(excluded_paths, &path) {
         if entry.is_dir() {
             zip_writer.add_directory(&path, options)?;
         }
@@ -141,7 +144,7 @@ fn process_zip_entry(
 
             if infer::is_archive(&entry_bytes) {
                 progress_bar.set_message(format!("inner archive: {}", &path));
-                let mut excluded_paths = retain_inner_vec(excluded_paths, &path);
+                let mut excluded_paths = filter_paths(excluded_paths, &path);
                 if !excluded_paths.is_empty() {
                     zip_handle_inner_archive(
                         progress_bar,
@@ -165,7 +168,7 @@ fn process_zip_entry(
 fn encode_zip(
     progress_bar: &ProgressBar,
     input: Vec<u8>,
-    excluded_paths: &mut Vec<PathBuf>,
+    excluded_paths: &mut HashSet<PathBuf>,
     compression_level: u32,
 ) -> Result<Vec<u8>> {
     let decoder = std::io::Cursor::new(input);
@@ -194,13 +197,13 @@ fn encode_zip(
 fn tar_handle_inner_archive(
     progress_bar: &ProgressBar,
     input: Vec<u8>,
-    excluded_paths: &mut Vec<PathBuf>,
+    excluded_paths: &mut HashSet<PathBuf>,
     path: &str,
     compression_level: u32,
 ) -> Result<(Vec<u8>, bool)> {
     if infer::is_archive(&input) {
         progress_bar.set_message(format!("inner archive: {path}"));
-        let mut excluded_paths = retain_inner_vec(excluded_paths, path);
+        let mut excluded_paths = filter_paths(excluded_paths, path);
         if !excluded_paths.is_empty() {
             let result = pack_archive(progress_bar, input, &mut excluded_paths, compression_level)?;
             return Ok((result, true));
@@ -212,7 +215,7 @@ fn tar_handle_inner_archive(
 fn encode_tar(
     progress_bar: &ProgressBar,
     input: &[u8],
-    excluded_paths: &mut Vec<PathBuf>,
+    excluded_paths: &mut HashSet<PathBuf>,
     compression_level: u32,
     mime_type: &str,
 ) -> Result<Vec<u8>> {
@@ -224,13 +227,10 @@ fn encode_tar(
     for entry in tar_archive.entries()? {
         match entry {
             Ok(mut entry) => {
-                let path = (*entry.path()?).to_owned();
-                let path = path.to_string_lossy().to_string();
+                let path = (*entry.path()?).to_string_lossy().to_string();
                 progress_bar.set_message(format!("processing: {path}"));
 
-                if let Some(found_file) = excluded_paths.iter().position(|e| e.ends_with(&path)) {
-                    excluded_paths.swap_remove(found_file);
-                } else {
+                if !remove_matching_excluded(excluded_paths, &path) {
                     match entry.header().entry_type() {
                         tar::EntryType::Directory => {
                             progress_bar.set_message(format!("adding directory: {path}"));
@@ -246,7 +246,6 @@ fn encode_tar(
                         | tar::EntryType::XGlobalHeader
                         | tar::EntryType::XHeader => {
                             progress_bar.set_message(format!("adding file: {path}"));
-
                             // read exactly the size of the current entry
                             let mut inner_entry =
                                 vec![Default::default(); entry.header().size()?.try_into()?];
@@ -316,21 +315,46 @@ mod tests {
     }
 
     #[test]
-    fn test_retain_inner_vec() {
-        let mut input = vec![
+    fn test_filter_paths() {
+        let mut input: HashSet<PathBuf> = [
             PathBuf::from("1/2"),
             PathBuf::from("2/2"),
             PathBuf::from("3/3"),
             PathBuf::from("3/4"),
-        ];
+        ]
+        .into_iter()
+        .collect();
 
-        let output = retain_inner_vec(&mut input, "3");
+        let output = filter_paths(&mut input, "3");
 
         assert_eq!(input.len(), 2);
-        assert_eq!(input[0].to_str().unwrap(), "1/2");
-        assert_eq!(input[1].to_str().unwrap(), "2/2");
+        assert!(input.contains(&PathBuf::from("1/2")));
+        assert!(input.contains(&PathBuf::from("2/2")));
+
         assert_eq!(output.len(), 2);
-        assert_eq!(output[0].to_str().unwrap(), "3/3");
-        assert_eq!(output[1].to_str().unwrap(), "3/4");
+        assert!(output.contains(&PathBuf::from("3/3")));
+        assert!(output.contains(&PathBuf::from("3/4")));
+    }
+
+    #[test]
+    fn test_remove_matching_excluded_suffix_behavior() {
+        let mut excluded: HashSet<PathBuf> = [
+            PathBuf::from("foo/bar.txt"),
+            PathBuf::from("baz/qux.rs"),
+            PathBuf::from("src/lib.rs"),
+        ]
+        .into_iter()
+        .collect();
+
+        let path = "bar.txt";
+
+        let removed = remove_matching_excluded(&mut excluded, path);
+
+        assert!(removed);
+
+        assert!(!excluded.contains(&PathBuf::from("foo/bar.txt")));
+
+        assert!(excluded.contains(&PathBuf::from("baz/qux.rs")));
+        assert!(excluded.contains(&PathBuf::from("src/lib.rs")));
     }
 }
