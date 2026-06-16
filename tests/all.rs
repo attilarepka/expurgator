@@ -18,7 +18,7 @@ fn test_argument_version() -> Result<(), Box<dyn std::error::Error>> {
     cmd.arg("--version");
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("0.1.5"));
+        .stdout(predicate::str::contains("0.2.0"));
 
     Ok(())
 }
