@@ -4,8 +4,7 @@ mod util;
 
 use anyhow::Result;
 use archive::pack_archive;
-use indicatif::ProgressBar;
-use indicatif::ProgressStyle;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
 use util::{file_to_bytes, parse_compression, parse_csv, prompt_csv, to_file};
 
