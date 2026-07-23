@@ -1,5 +1,4 @@
 use std::{
-    borrow::BorrowMut,
     collections::HashSet,
     io::{BufReader, BufWriter, Read, Write},
     path::PathBuf,
@@ -33,8 +32,7 @@ pub fn pack_archive(
             )
         }
         _ => Err(anyhow!(
-            "Unsupported File Type: The file with MIME type '{}' is not supported.",
-            mime_type
+            "Unsupported File Type: The file with MIME type '{mime_type}' is not supported."
         ))?,
     }
 }
@@ -143,7 +141,7 @@ fn process_zip_entry(
             entry.read_exact(&mut entry_bytes)?;
 
             if infer::is_archive(&entry_bytes) {
-                progress_bar.set_message(format!("inner archive: {}", &path));
+                progress_bar.set_message(format!("inner archive: {path}"));
                 let mut excluded_paths = filter_paths(excluded_paths, &path);
                 if !excluded_paths.is_empty() {
                     zip_handle_inner_archive(
@@ -212,6 +210,28 @@ fn tar_handle_inner_archive(
     Ok((input, false))
 }
 
+fn is_file_entry_type(entry_type: tar::EntryType) -> bool {
+    matches!(
+        entry_type,
+        tar::EntryType::Regular
+            | tar::EntryType::GNUSparse
+            | tar::EntryType::Continuous
+            | tar::EntryType::Fifo
+            | tar::EntryType::Char
+            | tar::EntryType::Block
+            | tar::EntryType::GNULongName
+            | tar::EntryType::XGlobalHeader
+            | tar::EntryType::XHeader
+    )
+}
+
+fn is_link_entry_type(entry_type: tar::EntryType) -> bool {
+    matches!(
+        entry_type,
+        tar::EntryType::Symlink | tar::EntryType::Link | tar::EntryType::GNULongLink
+    )
+}
+
 fn encode_tar(
     progress_bar: &ProgressBar,
     input: &[u8],
@@ -236,17 +256,8 @@ fn encode_tar(
                             progress_bar.set_message(format!("adding directory: {path}"));
                             tar_writer.append_dir(&path, ".")?;
                         }
-                        tar::EntryType::Regular
-                        | tar::EntryType::GNUSparse
-                        | tar::EntryType::Continuous
-                        | tar::EntryType::Fifo
-                        | tar::EntryType::Char
-                        | tar::EntryType::Block
-                        | tar::EntryType::GNULongName
-                        | tar::EntryType::XGlobalHeader
-                        | tar::EntryType::XHeader => {
+                        entry_type if is_file_entry_type(entry_type) => {
                             progress_bar.set_message(format!("adding file: {path}"));
-                            // read exactly the size of the current entry
                             let mut inner_entry =
                                 vec![Default::default(); entry.header().size()?.try_into()?];
                             entry.read_exact(&mut inner_entry)?;
@@ -264,12 +275,11 @@ fn encode_tar(
                             }
                             tar_writer.append_data(&mut header, &path, &*inner_entry)?;
                         }
-                        tar::EntryType::Symlink
-                        | tar::EntryType::Link
-                        | tar::EntryType::GNULongLink => {
+                        entry_type if is_link_entry_type(entry_type) => {
                             progress_bar.set_message(format!("adding link: {path}"));
+                            let mut header = entry.header().clone();
                             tar_writer.append_link(
-                                entry.header().clone().borrow_mut(),
+                                &mut header,
                                 &path,
                                 entry
                                     .header()
@@ -287,7 +297,7 @@ fn encode_tar(
         }
     }
     let encoder = tar_writer.into_inner()?;
-    let result = encoder.inner().unwrap();
+    let result = encoder.inner()?;
     Ok(result)
 }
 

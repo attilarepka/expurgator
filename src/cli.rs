@@ -27,15 +27,3 @@ pub struct Args {
     #[arg(long, short, default_value_t = 6)]
     pub compression: u32,
 }
-
-impl Args {
-    pub fn from() -> Args {
-        let mut args = Args::parse();
-
-        if args.output.is_none() {
-            args.output = Some(args.input.clone());
-        }
-
-        args
-    }
-}
