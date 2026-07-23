@@ -26,8 +26,7 @@ pub fn parse_csv(file_path: &str, index: usize, header: bool) -> Result<HashSet<
             result.insert(field.into());
         } else {
             Err(anyhow!(
-                "Index Not Found: The expected index '{}' was not found.",
-                index
+                "Index Not Found: The expected index '{index}' was not found."
             ))?;
         }
     }
@@ -90,17 +89,23 @@ pub fn infer_input_file(file_bytes: &[u8]) -> Result<String> {
 }
 
 pub fn to_file(dst: &str, payload: &[u8]) -> Result<()> {
-    let mut out = String::from("out/");
-    if !Path::new(out.as_str()).exists() {
-        create_dir_all(out.as_str())?;
+    let out_dir = "out";
+    if !Path::new(out_dir).exists() {
+        create_dir_all(out_dir)?;
     }
-    let out_path = Path::new(dst);
-    out.push_str(out_path.file_name().unwrap().to_str().unwrap());
+
+    let file_name = Path::new(dst)
+        .file_name()
+        .ok_or_else(|| anyhow!("Invalid output path: {dst}"))?
+        .to_str()
+        .ok_or_else(|| anyhow!("Invalid UTF-8 in output path: {dst}"))?;
+
+    let out_path = Path::new(out_dir).join(file_name);
     let mut file = OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true)
-        .open(out)?;
+        .open(&out_path)?;
 
     file.write_all(payload)?;
 

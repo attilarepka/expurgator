@@ -4,12 +4,13 @@ mod util;
 
 use anyhow::Result;
 use archive::pack_archive;
+use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
 use util::{file_to_bytes, parse_compression, parse_csv, prompt_csv, to_file};
 
 fn main() -> Result<()> {
-    let args = cli::Args::from();
+    let mut args = cli::Args::parse();
 
     let compression_level = parse_compression(args.compression)?;
 
@@ -36,6 +37,9 @@ fn main() -> Result<()> {
 
     let result = pack_archive(&progress_bar, input, &mut excluded_paths, compression_level)?;
 
+    if args.output.is_none() {
+        args.output = Some(args.input.clone());
+    }
     to_file(args.output.unwrap().as_str(), &result)?;
 
     Ok(())
