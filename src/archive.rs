@@ -121,7 +121,7 @@ fn process_zip_entry(
     progress_bar: &ProgressBar,
     compression_level: u32,
 ) -> Result<()> {
-    let path = entry.name().to_owned();
+    let path = entry.name()?.into_owned();
     let options = SimpleFileOptions::default()
         .compression_level(match entry.compression() {
             zip::CompressionMethod::Stored => None,
