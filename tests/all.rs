@@ -80,6 +80,96 @@ fn test_non_tty_run_does_not_prompt() -> Result<(), Box<dyn std::error::Error>> 
 }
 
 #[test]
+fn test_zip_preserves_entry_timestamps() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = assert_fs::TempDir::new()?;
+    let input = temp_dir.path().join("input.zip");
+    let filter = temp_dir.path().join("filter.csv");
+    let output = temp_dir.path().join("output.zip");
+    let modified = zip::DateTime::from_date_and_time(2001, 2, 3, 4, 5, 6)?;
+    let options = zip::write::SimpleFileOptions::default().last_modified_time(modified);
+
+    let mut nested = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    nested.start_file("keep.txt", options)?;
+    nested.write_all(b"keep")?;
+    nested.start_file("remove.txt", options)?;
+    nested.write_all(b"remove")?;
+    let nested = nested.finish()?.into_inner();
+
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    zip.add_directory("folder/", options)?;
+    zip.start_file("folder/file.txt", options)?;
+    zip.write_all(b"keep")?;
+    zip.start_file("nested.zip", options)?;
+    zip.write_all(&nested)?;
+    std::fs::write(&input, zip.finish()?.into_inner())?;
+    std::fs::write(&filter, "nested.zip/remove.txt\n")?;
+
+    Command::cargo_bin("expurgator")?
+        .args(["--non-interactive", "--index", "1", "--output"])
+        .arg(&output)
+        .arg(&input)
+        .arg(&filter)
+        .assert()
+        .success();
+
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(output)?)?;
+    for path in ["folder/", "folder/file.txt", "nested.zip"] {
+        assert_eq!(zip.by_name(path)?.last_modified(), Some(modified));
+    }
+    let mut nested_data = Vec::new();
+    zip.by_name("nested.zip")?.read_to_end(&mut nested_data)?;
+    let mut nested = zip::ZipArchive::new(Cursor::new(nested_data))?;
+    assert_eq!(nested.by_name("keep.txt")?.last_modified(), Some(modified));
+    assert!(nested.by_name("remove.txt").is_err());
+    Ok(())
+}
+
+#[test]
+fn test_invalid_zip_timestamp_fails_unless_entry_is_excluded(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = assert_fs::TempDir::new()?;
+    let input = temp_dir.path().join("input.zip");
+    let filter = temp_dir.path().join("filter.csv");
+    let output = temp_dir.path().join("output.zip");
+
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    zip.start_file("entry.txt", zip::write::SimpleFileOptions::default())?;
+    zip.write_all(b"content")?;
+    let mut bytes = zip.finish()?.into_inner();
+    let central = bytes
+        .windows(4)
+        .position(|window| window == b"PK\x01\x02")
+        .expect("central directory header");
+    bytes[12..14].copy_from_slice(&[0, 0]);
+    bytes[central + 14..central + 16].copy_from_slice(&[0, 0]);
+    std::fs::write(&input, bytes)?;
+    std::fs::write(&filter, "other.txt\n")?;
+
+    Command::cargo_bin("expurgator")?
+        .args(["--non-interactive", "--index", "1", "--output"])
+        .arg(&output)
+        .arg(&input)
+        .arg(&filter)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Invalid ZIP modification timestamp",
+        ))
+        .stderr(predicate::str::contains("entry.txt"));
+    assert!(!output.exists());
+
+    std::fs::write(&filter, "entry.txt\n")?;
+    Command::cargo_bin("expurgator")?
+        .args(["--non-interactive", "--index", "1", "--output"])
+        .arg(&output)
+        .arg(&input)
+        .arg(&filter)
+        .assert()
+        .success();
+    Ok(())
+}
+
+#[test]
 fn test_invalid_archive_fails_without_panicking() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = assert_fs::TempDir::new()?;
     let input = temp_dir.path().join("invalid.zip");

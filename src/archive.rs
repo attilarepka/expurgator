@@ -145,17 +145,21 @@ fn process_zip_entry(
     pack_options: &PackOptions,
 ) -> Result<()> {
     let path = entry.name()?.into_owned();
-    let options = SimpleFileOptions::default()
-        .compression_level(match entry.compression() {
-            zip::CompressionMethod::Stored => None,
-            _ => Some(pack_options.compression_level.into()),
-        })
-        .compression_method(entry.compression())
-        .unix_permissions(entry.unix_mode().unwrap_or(0o777));
-
     progress_bar.set_message(format!("processing: {path}"));
 
     if !is_excluded(excluded_paths, Path::new(&path)) {
+        let modified = entry
+            .last_modified()
+            .ok_or_else(|| anyhow!("Invalid ZIP modification timestamp for '{path}'"))?;
+        let options = SimpleFileOptions::default()
+            .compression_level(match entry.compression() {
+                zip::CompressionMethod::Stored => None,
+                _ => Some(pack_options.compression_level.into()),
+            })
+            .compression_method(entry.compression())
+            .unix_permissions(entry.unix_mode().unwrap_or(0o777))
+            .last_modified_time(modified);
+
         if entry.is_dir() {
             zip_writer.add_directory(&path, options)?;
         }
