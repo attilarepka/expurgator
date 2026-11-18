@@ -7,7 +7,7 @@ pub struct Args {
     #[arg(index = 1)]
     pub input: String,
 
-    /// CSV file specifying which files or paths should be removed from the input archive
+    /// CSV file specifying files or directories to remove, including directory contents
     #[arg(index = 2)]
     pub filter: String,
 
