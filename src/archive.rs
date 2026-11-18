@@ -114,6 +114,12 @@ fn nested_exclusions(excluded_paths: &HashSet<PathBuf>, path: &str) -> HashSet<P
         .collect()
 }
 
+fn is_excluded(excluded_paths: &HashSet<PathBuf>, path: &Path) -> bool {
+    path.ancestors()
+        .filter(|ancestor| !ancestor.as_os_str().is_empty())
+        .any(|ancestor| excluded_paths.contains(ancestor))
+}
+
 fn zip_handle_inner_archive(
     progress_bar: &ProgressBar,
     entry_bytes: Vec<u8>,
@@ -149,7 +155,7 @@ fn process_zip_entry(
 
     progress_bar.set_message(format!("processing: {path}"));
 
-    if !excluded_paths.contains(Path::new(&path)) {
+    if !is_excluded(excluded_paths, Path::new(&path)) {
         if entry.is_dir() {
             zip_writer.add_directory(&path, options)?;
         }
@@ -267,7 +273,7 @@ fn encode_tar(
                 let path = (*entry.path()?).to_string_lossy().to_string();
                 progress_bar.set_message(format!("processing: {path}"));
 
-                if !excluded_paths.contains(Path::new(&path)) {
+                if !is_excluded(excluded_paths, Path::new(&path)) {
                     match entry.header().entry_type() {
                         tar::EntryType::Directory => {
                             progress_bar.set_message(format!("adding directory: {path}"));

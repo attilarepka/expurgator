@@ -215,6 +215,102 @@ fn test_exact_paths_and_duplicates_in_nested_archives() -> Result<(), Box<dyn st
 }
 
 #[test]
+fn test_directory_exclusions_in_tar_and_nested_zip() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = assert_fs::TempDir::new()?;
+    let input = temp_dir.path().join("input.tar.gz");
+    let filter = temp_dir.path().join("filter.csv");
+    let output = temp_dir.path().join("output.tar.gz");
+
+    let mut inner_zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    inner_zip.add_directory("folder/", zip::write::SimpleFileOptions::default())?;
+    for path in ["folder/file.txt", "folder/sub/file.txt", "folder2/keep.txt"] {
+        inner_zip.start_file(path, zip::write::SimpleFileOptions::default())?;
+        inner_zip.write_all(b"content")?;
+    }
+    let inner_zip = inner_zip.finish()?.into_inner();
+
+    let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut builder = tar::Builder::new(encoder);
+    for (path, contents) in [
+        ("folder/file.txt", &b"remove"[..]),
+        ("folder/sub/file.txt", &b"remove"[..]),
+        ("folder2/keep.txt", &b"keep"[..]),
+        ("nested.zip", inner_zip.as_slice()),
+    ] {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append_data(&mut header, path, contents)?;
+    }
+    std::fs::write(&input, builder.into_inner()?.finish()?)?;
+    std::fs::write(&filter, "folder/\nnested.zip/folder\n")?;
+
+    Command::cargo_bin("expurgator")?
+        .args(["--non-interactive", "--index", "1", "--output"])
+        .arg(&output)
+        .arg(&input)
+        .arg(&filter)
+        .assert()
+        .success();
+
+    let archive = std::fs::File::open(output)?;
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
+    let mut remaining = Vec::new();
+    let mut nested_data = Vec::new();
+    for entry in tar.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        if path == std::path::Path::new("nested.zip") {
+            entry.read_to_end(&mut nested_data)?;
+        }
+        remaining.push(path);
+    }
+    assert_eq!(
+        remaining,
+        [
+            std::path::PathBuf::from("folder2/keep.txt"),
+            std::path::PathBuf::from("nested.zip"),
+        ]
+    );
+
+    let mut nested = zip::ZipArchive::new(Cursor::new(nested_data))?;
+    assert_eq!(nested.len(), 1);
+    assert!(nested.by_name("folder2/keep.txt").is_ok());
+    Ok(())
+}
+
+#[test]
+fn test_directory_exclusions_in_zip() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = assert_fs::TempDir::new()?;
+    let input = temp_dir.path().join("input.zip");
+    let filter = temp_dir.path().join("filter.csv");
+    let output = temp_dir.path().join("output.zip");
+
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    zip.add_directory("folder/", zip::write::SimpleFileOptions::default())?;
+    for path in ["folder/file.txt", "folder/sub/file.txt", "folder2/keep.txt"] {
+        zip.start_file(path, zip::write::SimpleFileOptions::default())?;
+        zip.write_all(b"content")?;
+    }
+    std::fs::write(&input, zip.finish()?.into_inner())?;
+    std::fs::write(&filter, "folder\n")?;
+
+    Command::cargo_bin("expurgator")?
+        .args(["--non-interactive", "--index", "1", "--output"])
+        .arg(&output)
+        .arg(&input)
+        .arg(&filter)
+        .assert()
+        .success();
+
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(output)?)?;
+    assert_eq!(zip.len(), 1);
+    assert!(zip.by_name("folder2/keep.txt").is_ok());
+    Ok(())
+}
+
+#[test]
 fn test_duplicate_zip_entries_are_rejected() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = assert_fs::TempDir::new()?;
     let input = temp_dir.path().join("input.zip");
