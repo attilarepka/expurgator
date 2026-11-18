@@ -17,7 +17,7 @@ fn main() -> Result<()> {
 
     let input = file_to_bytes(&args.input)?;
 
-    let mut excluded_paths = parse_csv(&args.filter, args.index, args.with_headers)?;
+    let excluded_paths = parse_csv(&args.filter, args.index, args.with_headers)?;
     let non_interactive = args.non_interactive || !is_interactive();
     if !non_interactive {
         prompt_csv(&excluded_paths)?;
@@ -42,7 +42,7 @@ fn main() -> Result<()> {
     let result = pack_archive(
         &progress_bar,
         input,
-        &mut excluded_paths,
+        &excluded_paths,
         compression_level,
         non_interactive,
     )?;
