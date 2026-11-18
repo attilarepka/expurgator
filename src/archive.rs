@@ -189,6 +189,11 @@ fn encode_zip(
     let decoder = std::io::Cursor::new(input);
 
     let mut zip_entries = zip::ZipArchive::new(decoder)?;
+    if zip_entries.has_duplicate_names() {
+        return Err(anyhow!(
+            "ZIP archives with duplicate entry names are not supported"
+        ));
+    }
     let mut result: Vec<u8> = Vec::new();
     {
         let encoder = std::io::Cursor::new(&mut result);
