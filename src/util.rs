@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     fs::{create_dir_all, OpenOptions},
-    io::Write,
+    io::{IsTerminal, Write},
     path::{Path, PathBuf},
 };
 
@@ -44,13 +44,17 @@ pub fn parse_compression(compression_level: u32) -> Result<u32> {
 }
 
 pub fn prompt_csv(result: &HashSet<PathBuf>) -> Result<()> {
+    let first_entry = result
+        .iter()
+        .next()
+        .map_or_else(|| "(empty)".to_owned(), |path| path.display().to_string());
     let ans = Confirm::new("Is this correct?")
         .with_default(false)
         .with_help_message(
             format!(
                 "File contains {} records, first value:\n{}",
                 result.len(),
-                result.iter().next().unwrap().to_str().unwrap()
+                first_entry
             )
             .as_str(),
         )
@@ -63,7 +67,7 @@ pub fn prompt_csv(result: &HashSet<PathBuf>) -> Result<()> {
     }
 }
 
-pub fn prompt_error(progress_bar: &ProgressBar) -> Result<()> {
+pub fn prompt_error(progress_bar: &ProgressBar, error: std::io::Error) -> Result<()> {
     let mut ans = Ok(false);
     progress_bar.suspend(|| {
         ans = Confirm::new("Do you want to continue?")
@@ -73,7 +77,9 @@ pub fn prompt_error(progress_bar: &ProgressBar) -> Result<()> {
     });
     match ans {
         Ok(true) => Ok(()),
-        Ok(false) => Err(anyhow!("User interrupted, exiting"))?,
+        Ok(false) => Err(anyhow!(
+            "User interrupted; failed to process tar entry: {error}"
+        )),
         Err(err) => Err(err)?,
     }
 }
@@ -88,28 +94,36 @@ pub fn infer_input_file(file_bytes: &[u8]) -> Result<String> {
     ))?
 }
 
-pub fn to_file(dst: &str, payload: &[u8]) -> Result<()> {
-    let out_dir = "out";
-    if !Path::new(out_dir).exists() {
-        create_dir_all(out_dir)?;
+pub fn to_file(dst: &Path, payload: &[u8], force: bool) -> Result<()> {
+    if let Some(parent) = dst.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        create_dir_all(parent)?;
     }
 
-    let file_name = Path::new(dst)
-        .file_name()
-        .ok_or_else(|| anyhow!("Invalid output path: {dst}"))?
-        .to_str()
-        .ok_or_else(|| anyhow!("Invalid UTF-8 in output path: {dst}"))?;
+    let mut options = OpenOptions::new();
+    options.write(true);
+    if force {
+        options.create(true).truncate(true);
+    } else {
+        options.create_new(true);
+    }
 
-    let out_path = Path::new(out_dir).join(file_name);
-    let mut file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&out_path)?;
-
+    let mut file = match options.open(dst) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && !force => {
+            return Err(anyhow!(
+                "Output file '{}' already exists; use --force to overwrite it",
+                dst.display()
+            ));
+        }
+        Err(err) => return Err(err.into()),
+    };
     file.write_all(payload)?;
 
     Ok(())
+}
+
+pub fn is_interactive() -> bool {
+    std::io::stdin().is_terminal()
 }
 
 #[cfg(test)]
@@ -161,5 +175,21 @@ mod tests {
         );
 
         assert!(file_to_bytes("nonexistent_file").is_err());
+    }
+
+    #[test]
+    fn test_to_file_honors_path_and_prevents_overwrite_without_force() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let output = dir.path().join("artifacts/result.bin");
+
+        to_file(&output, b"first", false).unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"first");
+
+        let err = to_file(&output, b"second", false).unwrap_err();
+        assert!(err.to_string().contains("--force"));
+        assert_eq!(std::fs::read(&output).unwrap(), b"first");
+
+        to_file(&output, b"second", true).unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"second");
     }
 }

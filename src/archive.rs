@@ -13,22 +13,42 @@ use zip::write::SimpleFileOptions;
 
 use crate::util::{infer_input_file, prompt_error};
 
+#[derive(Clone, Copy)]
+struct PackOptions {
+    compression_level: u32,
+    non_interactive: bool,
+}
+
 pub fn pack_archive(
     progress_bar: &ProgressBar,
     input: Vec<u8>,
     excluded_paths: &mut HashSet<PathBuf>,
     compression_level: u32,
+    non_interactive: bool,
+) -> Result<Vec<u8>> {
+    let options = PackOptions {
+        compression_level,
+        non_interactive,
+    };
+    pack_archive_with_options(progress_bar, input, excluded_paths, &options)
+}
+
+fn pack_archive_with_options(
+    progress_bar: &ProgressBar,
+    input: Vec<u8>,
+    excluded_paths: &mut HashSet<PathBuf>,
+    options: &PackOptions,
 ) -> Result<Vec<u8>> {
     let mime_type = infer_input_file(&input)?;
     match mime_type.as_str() {
-        "application/zip" => encode_zip(progress_bar, input, excluded_paths, compression_level),
+        "application/zip" => encode_zip(progress_bar, input, excluded_paths, options),
         "application/gzip" | "application/x-bzip2" | "application/x-xz" | "application/x-tar" => {
             encode_tar(
                 progress_bar,
                 &input,
                 excluded_paths,
-                compression_level,
                 mime_type.as_str(),
+                options,
             )
         }
         _ => Err(anyhow!(
@@ -102,12 +122,13 @@ fn zip_handle_inner_archive(
     progress_bar: &ProgressBar,
     entry_bytes: Vec<u8>,
     excluded_paths: &mut HashSet<PathBuf>,
-    compression_level: u32,
     path: &str,
     options: SimpleFileOptions,
     zip_writer: &mut zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>>,
+    pack_options: &PackOptions,
 ) -> Result<()> {
-    let result = pack_archive(progress_bar, entry_bytes, excluded_paths, compression_level)?;
+    let result =
+        pack_archive_with_options(progress_bar, entry_bytes, excluded_paths, pack_options)?;
     zip_writer.start_file(path, options)?;
     zip_writer.write_all(&result)?;
 
@@ -119,13 +140,13 @@ fn process_zip_entry(
     zip_writer: &mut zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>>,
     excluded_paths: &mut HashSet<PathBuf>,
     progress_bar: &ProgressBar,
-    compression_level: u32,
+    pack_options: &PackOptions,
 ) -> Result<()> {
     let path = entry.name()?.into_owned();
     let options = SimpleFileOptions::default()
         .compression_level(match entry.compression() {
             zip::CompressionMethod::Stored => None,
-            _ => Some(compression_level.into()),
+            _ => Some(pack_options.compression_level.into()),
         })
         .compression_method(entry.compression())
         .unix_permissions(entry.unix_mode().unwrap_or(0o777));
@@ -148,10 +169,10 @@ fn process_zip_entry(
                         progress_bar,
                         entry_bytes,
                         &mut excluded_paths,
-                        compression_level,
                         path.as_str(),
                         options,
                         zip_writer,
+                        pack_options,
                     )?;
                     return Ok(());
                 }
@@ -167,11 +188,11 @@ fn encode_zip(
     progress_bar: &ProgressBar,
     input: Vec<u8>,
     excluded_paths: &mut HashSet<PathBuf>,
-    compression_level: u32,
+    options: &PackOptions,
 ) -> Result<Vec<u8>> {
     let decoder = std::io::Cursor::new(input);
 
-    let mut zip_entries = zip::ZipArchive::new(decoder).unwrap();
+    let mut zip_entries = zip::ZipArchive::new(decoder)?;
     let mut result: Vec<u8> = Vec::new();
     {
         let encoder = std::io::Cursor::new(&mut result);
@@ -179,13 +200,7 @@ fn encode_zip(
 
         for i in 0..zip_entries.len() {
             let mut entry = zip_entries.by_index(i)?;
-            process_zip_entry(
-                &mut entry,
-                &mut zip,
-                excluded_paths,
-                progress_bar,
-                compression_level,
-            )?;
+            process_zip_entry(&mut entry, &mut zip, excluded_paths, progress_bar, options)?;
         }
         zip.finish()?;
     }
@@ -197,13 +212,14 @@ fn tar_handle_inner_archive(
     input: Vec<u8>,
     excluded_paths: &mut HashSet<PathBuf>,
     path: &str,
-    compression_level: u32,
+    options: &PackOptions,
 ) -> Result<(Vec<u8>, bool)> {
     if infer::is_archive(&input) {
         progress_bar.set_message(format!("inner archive: {path}"));
         let mut excluded_paths = filter_paths(excluded_paths, path);
         if !excluded_paths.is_empty() {
-            let result = pack_archive(progress_bar, input, &mut excluded_paths, compression_level)?;
+            let result =
+                pack_archive_with_options(progress_bar, input, &mut excluded_paths, options)?;
             return Ok((result, true));
         }
     }
@@ -236,13 +252,13 @@ fn encode_tar(
     progress_bar: &ProgressBar,
     input: &[u8],
     excluded_paths: &mut HashSet<PathBuf>,
-    compression_level: u32,
     mime_type: &str,
+    options: &PackOptions,
 ) -> Result<Vec<u8>> {
     let decoder = new_tar_decoder(input, mime_type)?;
     let mut tar_archive = tar::Archive::new(decoder);
 
-    let encoder = new_tar_encoder(mime_type, compression_level)?;
+    let encoder = new_tar_encoder(mime_type, options.compression_level)?;
     let mut tar_writer = tar::Builder::new(encoder);
     for entry in tar_archive.entries()? {
         match entry {
@@ -267,7 +283,7 @@ fn encode_tar(
                                 inner_entry,
                                 excluded_paths,
                                 &path,
-                                compression_level,
+                                options,
                             )?;
                             let mut header = entry.header().clone();
                             if is_archive {
@@ -291,8 +307,11 @@ fn encode_tar(
                     }
                 }
             }
-            Err(_) => {
-                prompt_error(progress_bar)?;
+            Err(error) => {
+                if options.non_interactive {
+                    return Err(anyhow!("Failed to process tar entry: {error}"));
+                }
+                prompt_error(progress_bar, error)?;
             }
         }
     }
