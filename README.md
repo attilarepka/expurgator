@@ -51,11 +51,17 @@ Arguments:
 Options:
   -i, --index <INDEX>              Index of the CSV column specifying which files or paths should be removed from the input archive
   -w, --with-headers               Specify this flag if the CSV contains a header record [default: false]
-  -o, --output <OUTPUT>            Output file [default: --input]
+  -o, --output <OUTPUT>            Output file [default: out/<input filename>]
   -c, --compression <COMPRESSION>  Compression level [default: 6]
+      --non-interactive            Do not prompt; malformed archive entries cause an error
+  -f, --force                      Overwrite the output file if it already exists
   -h, --help                       Print help
   -V, --version                    Print version
 ```
+
+When standard input is not a terminal, expurgator skips the confirmation prompt
+automatically. An explicit `--output` path is used as provided. Existing output
+files are not overwritten unless `--force` is specified.
 
 ## Contributing
 

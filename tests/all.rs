@@ -39,20 +39,65 @@ fn test_argument_missing_mandatory() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[ignore]
 #[test]
-fn test_extract_tar_gz() -> Result<(), Box<dyn std::error::Error>> {
+fn test_non_interactive_run_writes_to_explicit_output() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = assert_fs::TempDir::new()?;
+    let output = temp_dir.path().join("artifacts/filtered.tar.gz");
     let mut cmd = Command::cargo_bin("expurgator")?;
 
-    cmd.arg("--input")
-        .arg("tests/archives/tar-test.tar.gz")
-        .arg("--csv")
-        .arg("tests/assets/tar-test.csv")
-        .arg("--index")
+    cmd.arg("--index")
         .arg("2")
-        .write_stdin("y\n")
+        .arg("--non-interactive")
+        .arg("--output")
+        .arg(&output)
+        .arg("tests/archives/tar-test.tar.gz")
+        .arg("tests/assets/tar-test.csv")
         .assert()
         .success();
 
+    assert!(output.is_file());
+    Ok(())
+}
+
+#[test]
+fn test_non_tty_run_does_not_prompt() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = assert_fs::TempDir::new()?;
+    let output = temp_dir.path().join("filtered.tar.gz");
+    let mut cmd = Command::cargo_bin("expurgator")?;
+
+    cmd.arg("--index")
+        .arg("2")
+        .arg("--output")
+        .arg(&output)
+        .arg("tests/archives/tar-test.tar.gz")
+        .arg("tests/assets/tar-test.csv")
+        .assert()
+        .success();
+
+    assert!(output.is_file());
+    Ok(())
+}
+
+#[test]
+fn test_invalid_archive_fails_without_panicking() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = assert_fs::TempDir::new()?;
+    let input = temp_dir.path().join("invalid.zip");
+    let output = temp_dir.path().join("output.zip");
+    std::fs::write(&input, b"PK\x03\x04")?;
+    let mut cmd = Command::cargo_bin("expurgator")?;
+
+    cmd.arg("--index")
+        .arg("1")
+        .arg("--non-interactive")
+        .arg("--output")
+        .arg(&output)
+        .arg(&input)
+        .arg("tests/assets/tar-test.csv")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("Error:"))
+        .stderr(predicates::str::contains("panicked").not());
+
+    assert!(!output.exists());
     Ok(())
 }
