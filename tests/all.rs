@@ -101,3 +101,45 @@ fn test_invalid_archive_fails_without_panicking() -> Result<(), Box<dyn std::err
     assert!(!output.exists());
     Ok(())
 }
+
+#[test]
+fn test_unsupported_tar_entry_fails_unless_excluded() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = assert_fs::TempDir::new()?;
+    let input = temp_dir.path().join("input.tar.gz");
+    let filter = temp_dir.path().join("filter.csv");
+    let output = temp_dir.path().join("output.tar.gz");
+
+    let mut header = tar::Header::new_gnu();
+    header.set_entry_type(tar::EntryType::new(b'Z'));
+    header.set_mode(0o644);
+    header.set_size(0);
+    header.set_cksum();
+    let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut builder = tar::Builder::new(encoder);
+    builder.append_data(&mut header, "unknown-entry", std::io::empty())?;
+    let archive = builder.into_inner()?.finish()?;
+    std::fs::write(&input, archive)?;
+    std::fs::write(&filter, "other-entry\n")?;
+
+    Command::cargo_bin("expurgator")?
+        .args(["--non-interactive", "--index", "1", "--output"])
+        .arg(&output)
+        .arg(&input)
+        .arg(&filter)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown-entry"))
+        .stderr(predicate::str::contains("unsupported tar entry type"));
+    assert!(!output.exists());
+
+    std::fs::write(&filter, "unknown-entry\n")?;
+    Command::cargo_bin("expurgator")?
+        .args(["--non-interactive", "--index", "1", "--output"])
+        .arg(&output)
+        .arg(&input)
+        .arg(&filter)
+        .assert()
+        .success();
+    assert!(output.exists());
+    Ok(())
+}

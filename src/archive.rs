@@ -300,7 +300,11 @@ fn encode_tar(
                                     .unwrap_or(entry.header().path()?),
                             )?;
                         }
-                        _ => progress_bar.set_message(format!("unhandled type: {path}")),
+                        entry_type => {
+                            return Err(anyhow!(
+                                "unsupported tar entry type {entry_type:?} for '{path}'"
+                            ));
+                        }
                     }
                 }
             }
