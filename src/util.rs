@@ -2,7 +2,7 @@ use std::{
     collections::HashSet,
     fs::{create_dir_all, OpenOptions},
     io::{IsTerminal, Write},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use anyhow::{anyhow, Result};
@@ -32,6 +32,51 @@ pub fn parse_csv(file_path: &str, index: usize, header: bool) -> Result<HashSet<
     }
 
     Ok(result)
+}
+
+pub fn apply_archive_root(paths: HashSet<PathBuf>, root: &Path) -> Result<HashSet<PathBuf>> {
+    if root.as_os_str().is_empty()
+        || root
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
+    {
+        return Err(anyhow!(
+            "Archive root '{}' must be a relative path without '..'; use '.' for the archive root",
+            root.display()
+        ));
+    }
+    let root: PathBuf = root
+        .components()
+        .filter(|component| matches!(component, Component::Normal(_)))
+        .collect();
+
+    paths
+        .into_iter()
+        .map(|path| {
+            if !path.has_root() {
+                return Ok(path);
+            }
+            let relative = path.strip_prefix(Path::new("/"))?;
+            if relative.as_os_str().is_empty()
+                || relative
+                    .components()
+                    .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
+                || !relative
+                    .components()
+                    .any(|component| matches!(component, Component::Normal(_)))
+            {
+                return Err(anyhow!(
+                    "CSV path '{}' must name a path under the archive root without '..'",
+                    path.display()
+                ));
+            }
+            let relative: PathBuf = relative
+                .components()
+                .filter(|component| matches!(component, Component::Normal(_)))
+                .collect();
+            Ok(root.join(relative))
+        })
+        .collect()
 }
 
 pub fn parse_compression(compression_level: u32) -> Result<u32> {
@@ -152,6 +197,35 @@ mod tests {
         assert!(output.contains(&PathBuf::from("some/other/path")));
 
         assert!(parse_csv(file.path().to_str().unwrap(), 5, false).is_err());
+    }
+
+    #[test]
+    fn archive_root_maps_only_leading_slash_paths() {
+        let paths = HashSet::from([
+            PathBuf::from("/acorn/srcrename"),
+            PathBuf::from("old/root/file"),
+        ]);
+        let result = apply_archive_root(paths.clone(), Path::new("source root")).unwrap();
+        assert!(result.contains(Path::new("source root/acorn/srcrename")));
+        assert!(result.contains(Path::new("old/root/file")));
+
+        let result = apply_archive_root(paths, Path::new(".")).unwrap();
+        assert!(result.contains(Path::new("acorn/srcrename")));
+        assert!(result.contains(Path::new("old/root/file")));
+    }
+
+    #[test]
+    fn archive_root_rejects_escaping_or_empty_paths() {
+        let paths = HashSet::from([PathBuf::from("/file")]);
+        for root in ["", "/absolute", "../other", "root/../other"] {
+            assert!(apply_archive_root(paths.clone(), Path::new(root)).is_err());
+        }
+        for path in ["/", "/.", "/../file", "/folder/../file"] {
+            assert!(
+                apply_archive_root(HashSet::from([PathBuf::from(path)]), Path::new("root"))
+                    .is_err()
+            );
+        }
     }
 
     #[test]

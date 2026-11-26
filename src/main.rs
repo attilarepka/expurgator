@@ -8,7 +8,10 @@ use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::Path;
 use std::time::Duration;
-use util::{file_to_bytes, is_interactive, parse_compression, parse_csv, prompt_csv, to_file};
+use util::{
+    apply_archive_root, file_to_bytes, is_interactive, parse_compression, parse_csv, prompt_csv,
+    to_file,
+};
 
 fn main() -> Result<()> {
     let args = cli::Args::parse();
@@ -17,7 +20,10 @@ fn main() -> Result<()> {
 
     let input = file_to_bytes(&args.input)?;
 
-    let excluded_paths = parse_csv(&args.filter, args.index, args.with_headers)?;
+    let mut excluded_paths = parse_csv(&args.filter, args.index, args.with_headers)?;
+    if let Some(root) = &args.archive_root {
+        excluded_paths = apply_archive_root(excluded_paths, root)?;
+    }
     let non_interactive = args.non_interactive || !is_interactive();
     if !non_interactive {
         prompt_csv(&excluded_paths)?;

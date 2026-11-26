@@ -80,6 +80,53 @@ fn test_non_tty_run_does_not_prompt() -> Result<(), Box<dyn std::error::Error>> 
 }
 
 #[test]
+fn test_archive_root_filters_paths_and_nested_archives() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = assert_fs::TempDir::new()?;
+    let filter = temp_dir.path().join("filter.csv");
+    let output = temp_dir.path().join("output.tar.gz");
+    std::fs::write(
+        &filter,
+        "/file_2.txt\n/nested/nested.zip/zip-test/zippedfile.dat\ntar-test/file_3.txt\n",
+    )?;
+
+    Command::cargo_bin("expurgator")?
+        .args([
+            "--non-interactive",
+            "--index",
+            "1",
+            "--archive-root",
+            "tar-test",
+            "--output",
+        ])
+        .arg(&output)
+        .arg("tests/archives/tar-test.tar.gz")
+        .arg(&filter)
+        .assert()
+        .success();
+
+    let archive = std::fs::File::open(output)?;
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
+    let mut paths = Vec::new();
+    let mut nested_data = Vec::new();
+    for entry in tar.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        if path == std::path::Path::new("tar-test/nested/nested.zip") {
+            entry.read_to_end(&mut nested_data)?;
+        }
+        paths.push(path);
+    }
+    assert!(!paths.contains(&"tar-test/file_2.txt".into()));
+    assert!(!paths.contains(&"tar-test/file_3.txt".into()));
+    assert!(paths.contains(&"tar-test/file_1.txt".into()));
+
+    let mut nested = zip::ZipArchive::new(Cursor::new(nested_data))?;
+    assert!(nested.by_name("zip-test/zippedfile.dat").is_err());
+    assert!(nested.by_name("zip-test/nested/invalid-image.jpg").is_ok());
+    Ok(())
+}
+
+#[test]
 fn test_zip_preserves_entry_timestamps() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = assert_fs::TempDir::new()?;
     let input = temp_dir.path().join("input.zip");

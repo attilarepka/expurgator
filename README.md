@@ -51,6 +51,7 @@ Arguments:
 Options:
   -i, --index <INDEX>              Index of the CSV column specifying which files or paths should be removed from the input archive
   -w, --with-headers               Specify this flag if the CSV contains a header record [default: false]
+      --archive-root <ARCHIVE_ROOT>  Resolve leading-slash CSV paths relative to this directory inside the archive
   -o, --output <OUTPUT>            Output file [default: out/<input filename>]
   -c, --compression <COMPRESSION>  Compression level [default: 6]
       --non-interactive            Do not prompt; malformed archive entries cause an error
