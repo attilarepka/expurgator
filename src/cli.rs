@@ -1,4 +1,5 @@
 use clap::Parser;
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = None, long_about = None)]
@@ -18,6 +19,10 @@ pub struct Args {
     /// Specify this flag if the CSV contains a header record [default: false]
     #[arg(long, short)]
     pub with_headers: bool,
+
+    /// Resolve leading-slash CSV paths relative to this directory inside the archive
+    #[arg(long)]
+    pub archive_root: Option<PathBuf>,
 
     /// Output file [default: out/<input filename>]
     #[arg(long, short)]
